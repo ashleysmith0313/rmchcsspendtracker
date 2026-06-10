@@ -470,78 +470,200 @@ elif page == "Log Spend":
     <div class="page-header">
         <div>
             <div class="page-header-title">Log Weekly Spend</div>
-            <div class="page-header-sub">Add a provider placement record for the week</div>
+            <div class="page-header-sub">Add a single entry manually or upload multiple rows at once</div>
         </div>
     </div>
     """, unsafe_allow_html=True)
 
-    with st.container():
-        st.markdown('<div class="form-card">', unsafe_allow_html=True)
+    tab_manual, tab_bulk = st.tabs(["Single Entry", "Bulk Upload (CSV)"])
 
-        col1, col2 = st.columns(2)
+    # ── Tab 1: Manual entry ──────────────────────────────────────────────────
+    with tab_manual:
+        st.markdown("<div style='height:0.75rem'></div>", unsafe_allow_html=True)
+        with st.container():
+            st.markdown('<div class="form-card">', unsafe_allow_html=True)
 
-        with col1:
-            st.markdown("**Week & Provider**")
-            week_ending = st.date_input(
-                "Week Ending Date",
-                value=get_week_ending(),
-                help="Select the Saturday or Sunday the work week ends on"
-            )
-            provider_name = st.text_input("Provider Name", placeholder="Dr. Jane Smith")
-            provider_type = st.selectbox("Provider Type", ["Physician", "APP", "CRNA", "NP", "PA", "Other"])
+            col1, col2 = st.columns(2)
 
-        with col2:
-            st.markdown("**Assignment Details**")
-            specialty_options = [
-                "Emergency Medicine", "Hospitalist/Internal Medicine", "Family Medicine",
-                "OB/GYN", "Surgery", "Radiology", "Anesthesiology", "Psychiatry",
-                "Pediatrics", "Cardiology", "Orthopedics", "Neurology", "Other"
-            ]
-            specialty = st.selectbox("Specialty", specialty_options)
-            service_line = st.selectbox("Service Line", ["Physician", "APP", "Nursing", "Allied Health", "Other"])
-            department = st.text_input("Department / Unit", placeholder="e.g., ED, ICU, L&D")
+            with col1:
+                st.markdown("**Week & Provider**")
+                week_ending = st.date_input(
+                    "Week Ending Date",
+                    value=get_week_ending(),
+                    help="Select the Saturday or Sunday the work week ends on"
+                )
+                provider_name = st.text_input("Provider Name", placeholder="Dr. Jane Smith")
+                provider_type = st.selectbox("Provider Type", ["Physician", "APP", "CRNA", "NP", "PA", "Other"])
 
-        st.markdown("---")
-        col3, col4, col5 = st.columns(3)
+            with col2:
+                st.markdown("**Assignment Details**")
+                specialty_options = [
+                    "Emergency Medicine", "Hospitalist/Internal Medicine", "Family Medicine",
+                    "OB/GYN", "Surgery", "Radiology", "Anesthesiology", "Psychiatry",
+                    "Pediatrics", "Cardiology", "Orthopedics", "Neurology", "Other"
+                ]
+                specialty = st.selectbox("Specialty", specialty_options)
+                service_line = st.selectbox("Service Line", ["Physician", "APP", "Nursing", "Allied Health", "Other"])
+                department = st.text_input("Department / Unit", placeholder="e.g., ED, ICU, L&D")
 
-        with col3:
-            days_worked = st.number_input("Days Worked", min_value=0.5, max_value=7.0, value=5.0, step=0.5)
-        with col4:
-            daily_rate = st.number_input("Daily Rate ($)", min_value=0.0, value=1800.0, step=50.0)
-        with col5:
-            auto_total = days_worked * daily_rate
-            st.metric("Calculated Total", f"${auto_total:,.2f}")
+            st.markdown("---")
+            col3, col4, col5 = st.columns(3)
 
-        notes = st.text_area("Notes (optional)", placeholder="Contract type, extension, specialty notes...", height=80)
+            with col3:
+                days_worked = st.number_input("Days Worked", min_value=0.5, max_value=7.0, value=5.0, step=0.5)
+            with col4:
+                daily_rate = st.number_input("Daily Rate ($)", min_value=0.0, value=1800.0, step=50.0)
+            with col5:
+                auto_total = days_worked * daily_rate
+                st.metric("Calculated Total", f"${auto_total:,.2f}")
 
-        st.markdown("<div style='height:0.5rem'></div>", unsafe_allow_html=True)
+            notes = st.text_area("Notes (optional)", placeholder="Contract type, extension, specialty notes...", height=80)
 
-        col_btn1, col_btn2 = st.columns([1, 4])
-        with col_btn1:
-            submit = st.button("Save Entry", type="primary", use_container_width=True)
+            st.markdown("<div style='height:0.5rem'></div>", unsafe_allow_html=True)
 
-        if submit:
-            if not provider_name.strip():
-                st.error("Provider name is required.")
-            else:
-                entry = {
-                    "week_ending": str(week_ending),
-                    "provider_name": provider_name.strip(),
-                    "provider_type": provider_type,
-                    "specialty": specialty,
-                    "service_line": service_line,
-                    "department": department.strip(),
-                    "days_worked": days_worked,
-                    "daily_rate": daily_rate,
-                    "total_spend": round(days_worked * daily_rate, 2),
-                    "notes": notes.strip(),
-                    "logged_at": datetime.now().isoformat()
-                }
-                save_entry(entry)
-                st.success(f"Entry saved. {provider_name} | Week ending {week_ending} | ${entry['total_spend']:,.2f}")
-                st.rerun()
+            col_btn1, col_btn2 = st.columns([1, 4])
+            with col_btn1:
+                submit = st.button("Save Entry", type="primary", use_container_width=True)
 
-        st.markdown('</div>', unsafe_allow_html=True)
+            if submit:
+                if not provider_name.strip():
+                    st.error("Provider name is required.")
+                else:
+                    entry = {
+                        "week_ending": str(week_ending),
+                        "provider_name": provider_name.strip(),
+                        "provider_type": provider_type,
+                        "specialty": specialty,
+                        "service_line": service_line,
+                        "department": department.strip(),
+                        "days_worked": days_worked,
+                        "daily_rate": daily_rate,
+                        "total_spend": round(days_worked * daily_rate, 2),
+                        "notes": notes.strip(),
+                        "logged_at": datetime.now().isoformat()
+                    }
+                    save_entry(entry)
+                    st.success(f"Entry saved. {provider_name} | Week ending {week_ending} | ${entry['total_spend']:,.2f}")
+                    st.rerun()
+
+            st.markdown('</div>', unsafe_allow_html=True)
+
+    # ── Tab 2: Bulk CSV upload ───────────────────────────────────────────────
+    with tab_bulk:
+        st.markdown("<div style='height:0.75rem'></div>", unsafe_allow_html=True)
+
+        # Template download
+        st.markdown('<div class="section-header">Step 1: Download the Template</div>', unsafe_allow_html=True)
+        st.markdown('<div class="section-sub">Fill this out in Excel or Google Sheets. Do not rename the column headers.</div>', unsafe_allow_html=True)
+
+        template_data = {
+            "week_ending":   ["2025-06-07", "2025-06-07"],
+            "provider_name": ["Dr. Jane Smith", "Sarah Jones NP"],
+            "provider_type": ["Physician", "NP"],
+            "specialty":     ["Emergency Medicine", "Family Medicine"],
+            "service_line":  ["Physician", "APP"],
+            "department":    ["ED", "Clinic"],
+            "days_worked":   [5, 3],
+            "daily_rate":    [1800, 950],
+            "notes":         ["Extended contract", ""]
+        }
+        template_df = pd.DataFrame(template_data)
+        csv_template = template_df.to_csv(index=False).encode('utf-8')
+
+        st.download_button(
+            label="Download CSV Template",
+            data=csv_template,
+            file_name="RMCHCS_SpendUpload_Template.csv",
+            mime="text/csv",
+            type="primary"
+        )
+
+        st.markdown("<div style='height:1rem'></div>", unsafe_allow_html=True)
+
+        # Upload
+        st.markdown('<div class="section-header">Step 2: Upload Your Filled File</div>', unsafe_allow_html=True)
+        st.markdown('<div class="section-sub">CSV files only. Totals are calculated automatically from days worked x daily rate.</div>', unsafe_allow_html=True)
+
+        uploaded_file = st.file_uploader("Choose CSV file", type=["csv"], label_visibility="collapsed")
+
+        if uploaded_file is not None:
+            try:
+                upload_df = pd.read_csv(uploaded_file)
+
+                # Validate required columns
+                required_cols = ["week_ending", "provider_name", "provider_type",
+                                  "specialty", "service_line", "days_worked", "daily_rate"]
+                missing = [c for c in required_cols if c not in upload_df.columns]
+
+                if missing:
+                    st.error(f"Missing required columns: {', '.join(missing)}. Download the template above and use it as your starting point.")
+                else:
+                    # Fill optional cols
+                    if "department" not in upload_df.columns:
+                        upload_df["department"] = ""
+                    if "notes" not in upload_df.columns:
+                        upload_df["notes"] = ""
+
+                    upload_df["days_worked"] = pd.to_numeric(upload_df["days_worked"], errors="coerce")
+                    upload_df["daily_rate"]  = pd.to_numeric(upload_df["daily_rate"],  errors="coerce")
+                    upload_df["total_spend"] = (upload_df["days_worked"] * upload_df["daily_rate"]).round(2)
+
+                    # Flag bad rows
+                    bad_rows = upload_df[upload_df[["days_worked", "daily_rate", "total_spend"]].isnull().any(axis=1)]
+                    clean_df = upload_df[~upload_df.index.isin(bad_rows.index)].copy()
+
+                    st.markdown("<div style='height:0.5rem'></div>", unsafe_allow_html=True)
+                    st.markdown('<div class="section-header">Step 3: Preview Before Saving</div>', unsafe_allow_html=True)
+
+                    if not bad_rows.empty:
+                        st.warning(f"{len(bad_rows)} row(s) skipped due to missing or non-numeric days/rate values. They will not be imported.")
+                        with st.expander("Show skipped rows"):
+                            st.dataframe(bad_rows, use_container_width=True, hide_index=True)
+
+                    if clean_df.empty:
+                        st.error("No valid rows to import after validation.")
+                    else:
+                        preview_cols = ["week_ending", "provider_name", "provider_type",
+                                        "specialty", "service_line", "days_worked", "daily_rate", "total_spend", "notes"]
+                        preview_show = clean_df[preview_cols].copy()
+                        preview_show["daily_rate"]  = preview_show["daily_rate"].apply(lambda x: f"${x:,.2f}")
+                        preview_show["total_spend"] = preview_show["total_spend"].apply(lambda x: f"${x:,.2f}")
+                        preview_show.columns = ["Week Ending", "Provider", "Type", "Specialty",
+                                                 "Service Line", "Days", "Daily Rate", "Total Spend", "Notes"]
+
+                        st.dataframe(preview_show, use_container_width=True, hide_index=True)
+
+                        bulk_total = clean_df["total_spend"].sum()
+                        st.markdown(f"**{len(clean_df)} rows ready to import | Combined total: ${bulk_total:,.2f}**")
+
+                        st.markdown("<div style='height:0.4rem'></div>", unsafe_allow_html=True)
+                        col_b1, col_b2 = st.columns([1, 4])
+                        with col_b1:
+                            confirm_import = st.button("Save All Entries", type="primary", use_container_width=True)
+
+                        if confirm_import:
+                            saved_count = 0
+                            for _, row in clean_df.iterrows():
+                                entry = {
+                                    "week_ending":   str(row["week_ending"]).strip(),
+                                    "provider_name": str(row["provider_name"]).strip(),
+                                    "provider_type": str(row.get("provider_type", "")).strip(),
+                                    "specialty":     str(row["specialty"]).strip(),
+                                    "service_line":  str(row["service_line"]).strip(),
+                                    "department":    str(row.get("department", "")).strip(),
+                                    "days_worked":   float(row["days_worked"]),
+                                    "daily_rate":    float(row["daily_rate"]),
+                                    "total_spend":   float(row["total_spend"]),
+                                    "notes":         str(row.get("notes", "")).strip(),
+                                    "logged_at":     datetime.now().isoformat()
+                                }
+                                save_entry(entry)
+                                saved_count += 1
+                            st.success(f"{saved_count} entries saved successfully. Total spend logged: ${bulk_total:,.2f}")
+                            st.rerun()
+
+            except Exception as e:
+                st.error(f"Could not read file: {e}. Make sure it is a valid CSV.")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
