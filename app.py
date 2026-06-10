@@ -26,6 +26,9 @@ def _ensure_data_file():
         with open(DATA_FILE, "w") as f:
             json.dump([], f)
 
+# Service lines billed hourly vs daily
+HOURLY_SERVICE_LINES = {"Nursing", "Allied Health"}
+
 def load_data() -> pd.DataFrame:
     _ensure_data_file()
     with open(DATA_FILE, "r") as f:
@@ -34,10 +37,14 @@ def load_data() -> pd.DataFrame:
         return pd.DataFrame(columns=[
             "id", "week_ending", "provider_name", "provider_type",
             "specialty", "service_line", "department",
-            "days_worked", "daily_rate", "total_spend", "notes", "logged_at"
+            "days_worked", "daily_rate",
+            "hours_worked", "bill_rate",
+            "total_spend", "notes", "logged_at"
         ])
     df = pd.DataFrame(data)
-    for col in ["days_worked", "daily_rate", "total_spend"]:
+    for col in ["days_worked", "daily_rate", "hours_worked", "bill_rate", "total_spend"]:
+        if col not in df.columns:
+            df[col] = None
         df[col] = pd.to_numeric(df[col], errors="coerce")
     return df
 
@@ -191,9 +198,15 @@ def generate_pdf_report(df, week_ending, title, prepared_by="Vista Staffing Solu
             hdr_row[0].append("Notes")
         det_rows = []
         for _, row in df.sort_values("specialty").iterrows():
+            sl = row.get("service_line","")
+            if sl in HOURLY_SERVICE_LINES:
+                qty  = f"{row['hours_worked']:.1f} hrs" if pd.notna(row.get("hours_worked")) else ""
+                rate = f"${row['bill_rate']:,.2f}/hr"   if pd.notna(row.get("bill_rate"))    else ""
+            else:
+                qty  = f"{row['days_worked']:.1f} days" if pd.notna(row.get("days_worked")) else ""
+                rate = f"${row['daily_rate']:,.2f}/day"  if pd.notna(row.get("daily_rate"))  else ""
             r = [row["provider_name"], row.get("provider_type",""),
-                 row["specialty"], row["service_line"],
-                 f"{row['days_worked']:.1f}", f"${row['daily_rate']:,.2f}", f"${row['total_spend']:,.2f}"]
+                 row["specialty"], sl, qty, rate, f"${row['total_spend']:,.2f}"]
             if include_notes:
                 r.append(str(row.get("notes","") or ""))
             det_rows.append(r)
@@ -393,11 +406,23 @@ if page == "Dashboard":
 
     st.markdown('<div class="section-header" style="margin-top:0.5rem">Entry Detail</div>', unsafe_allow_html=True)
     st.markdown('<div class="section-sub">All logged entries in current filter view</div>', unsafe_allow_html=True)
-    disp = filtered[["week_ending","provider_name","specialty","service_line","days_worked","daily_rate","total_spend","notes"]].sort_values("week_ending", ascending=False).copy()
-    disp["daily_rate"]  = disp["daily_rate"].apply(lambda x: f"${x:,.2f}")
-    disp["total_spend"] = disp["total_spend"].apply(lambda x: f"${x:,.2f}")
-    disp.columns = ["Week Ending","Provider","Specialty","Service Line","Days","Daily Rate","Total Spend","Notes"]
-    st.dataframe(disp, use_container_width=True, hide_index=True)
+    disp = filtered[["week_ending","provider_name","specialty","service_line",
+                       "days_worked","daily_rate","hours_worked","bill_rate",
+                       "total_spend","notes"]].sort_values("week_ending", ascending=False).copy()
+    def fmt_unit(row):
+        if row["service_line"] in HOURLY_SERVICE_LINES:
+            hrs  = row["hours_worked"] if pd.notna(row["hours_worked"]) else ""
+            rate = f"${row['bill_rate']:,.2f}/hr" if pd.notna(row["bill_rate"]) else ""
+            return pd.Series([hrs, rate])
+        else:
+            days = row["days_worked"] if pd.notna(row["days_worked"]) else ""
+            rate = f"${row['daily_rate']:,.2f}/day" if pd.notna(row["daily_rate"]) else ""
+            return pd.Series([days, rate])
+    disp[["_qty","_rate"]] = disp.apply(fmt_unit, axis=1)
+    disp["total_spend"] = disp["total_spend"].apply(lambda x: f"${x:,.2f}" if pd.notna(x) else "")
+    disp_final = disp[["week_ending","provider_name","specialty","service_line","_qty","_rate","total_spend","notes"]].copy()
+    disp_final.columns = ["Week Ending","Provider","Specialty","Service Line","Days / Hours","Rate","Total Spend","Notes"]
+    st.dataframe(disp_final, use_container_width=True, hide_index=True)
 
 # ══════════════════════════════════════════════════════════════════════════════
 # LOG SPEND
@@ -415,25 +440,41 @@ elif page == "Log Spend":
 
     with tab_manual:
         st.markdown("<div style='height:0.75rem'></div>", unsafe_allow_html=True)
-        col1, col2 = st.columns(2)
         specialty_options = ["Emergency Medicine","Hospitalist/Internal Medicine","Family Medicine",
                              "OB/GYN","Surgery","Radiology","Anesthesiology","Psychiatry",
                              "Pediatrics","Cardiology","Orthopedics","Neurology","Other"]
+        col1, col2 = st.columns(2)
         with col1:
             st.markdown("**Week & Provider**")
-            week_ending  = st.date_input("Week Ending Date", value=get_week_ending())
-            provider_name= st.text_input("Provider Name", placeholder="Dr. Jane Smith")
-            provider_type= st.selectbox("Provider Type", ["Physician","APP","CRNA","NP","PA","Other"])
+            week_ending   = st.date_input("Week Ending Date", value=get_week_ending())
+            provider_name = st.text_input("Provider Name", placeholder="Dr. Jane Smith")
+            provider_type = st.selectbox("Provider Type", ["Physician","APP","CRNA","NP","PA","RN","LPN","Tech","Other"])
         with col2:
             st.markdown("**Assignment Details**")
             specialty    = st.selectbox("Specialty", specialty_options)
             service_line = st.selectbox("Service Line", ["Physician","APP","Nursing","Allied Health","Other"])
             department   = st.text_input("Department / Unit", placeholder="e.g., ED, ICU, L&D")
+
         st.markdown("---")
-        c3,c4,c5 = st.columns(3)
-        with c3: days_worked = st.number_input("Days Worked", min_value=0.5, max_value=7.0, value=5.0, step=0.5)
-        with c4: daily_rate  = st.number_input("Daily Rate ($)", min_value=0.0, value=1800.0, step=50.0)
-        with c5: st.metric("Calculated Total", f"${days_worked*daily_rate:,.2f}")
+        is_hourly = service_line in HOURLY_SERVICE_LINES
+
+        if is_hourly:
+            st.markdown("**Billing: Hourly** (Nursing / Allied Health)")
+            c3,c4,c5 = st.columns(3)
+            with c3: hours_worked = st.number_input("Hours Worked", min_value=0.5, value=40.0, step=0.5)
+            with c4: bill_rate    = st.number_input("Bill Rate ($/hr)", min_value=0.0, value=75.0, step=1.0)
+            with c5: st.metric("Calculated Total", f"${hours_worked*bill_rate:,.2f}")
+            days_worked = None; daily_rate = None
+            calc_total  = round(hours_worked * bill_rate, 2)
+        else:
+            st.markdown("**Billing: Daily** (Physician / APP / NP / PA)")
+            c3,c4,c5 = st.columns(3)
+            with c3: days_worked = st.number_input("Days Worked", min_value=0.5, max_value=7.0, value=5.0, step=0.5)
+            with c4: daily_rate  = st.number_input("Daily Rate ($)", min_value=0.0, value=1800.0, step=50.0)
+            with c5: st.metric("Calculated Total", f"${days_worked*daily_rate:,.2f}")
+            hours_worked = None; bill_rate = None
+            calc_total   = round(days_worked * daily_rate, 2)
+
         notes = st.text_area("Notes (optional)", placeholder="Contract type, extension, specialty notes...", height=80)
         st.markdown("<div style='height:0.5rem'></div>", unsafe_allow_html=True)
         cb1, _ = st.columns([1,4])
@@ -442,12 +483,22 @@ elif page == "Log Spend":
                 if not provider_name.strip():
                     st.error("Provider name is required.")
                 else:
-                    save_entry({"week_ending":str(week_ending),"provider_name":provider_name.strip(),
-                                "provider_type":provider_type,"specialty":specialty,"service_line":service_line,
-                                "department":department.strip(),"days_worked":days_worked,"daily_rate":daily_rate,
-                                "total_spend":round(days_worked*daily_rate,2),"notes":notes.strip(),
-                                "logged_at":datetime.now().isoformat()})
-                    st.success(f"Saved. {provider_name} | Week ending {week_ending} | ${days_worked*daily_rate:,.2f}")
+                    save_entry({
+                        "week_ending":  str(week_ending),
+                        "provider_name":provider_name.strip(),
+                        "provider_type":provider_type,
+                        "specialty":    specialty,
+                        "service_line": service_line,
+                        "department":   department.strip(),
+                        "days_worked":  days_worked,
+                        "daily_rate":   daily_rate,
+                        "hours_worked": hours_worked,
+                        "bill_rate":    bill_rate,
+                        "total_spend":  calc_total,
+                        "notes":        notes.strip(),
+                        "logged_at":    datetime.now().isoformat()
+                    })
+                    st.success(f"Saved. {provider_name} | {week_ending} | ${calc_total:,.2f}")
                     st.rerun()
 
     with tab_bulk:
@@ -455,10 +506,17 @@ elif page == "Log Spend":
         st.markdown('<div class="section-header">Step 1: Download the Template</div>', unsafe_allow_html=True)
         st.markdown('<div class="section-sub">Fill this out in Excel or Google Sheets. Do not rename the column headers.</div>', unsafe_allow_html=True)
         template_df = pd.DataFrame({
-            "week_ending":["2025-06-07","2025-06-07"], "provider_name":["Dr. Jane Smith","Sarah Jones NP"],
-            "provider_type":["Physician","NP"], "specialty":["Emergency Medicine","Family Medicine"],
-            "service_line":["Physician","APP"], "department":["ED","Clinic"],
-            "days_worked":[5,3], "daily_rate":[1800,950], "notes":["Extended contract",""]
+            "week_ending":  ["2025-06-07","2025-06-07","2025-06-07"],
+            "provider_name":["Dr. Jane Smith","Sarah Jones NP","Mary RN"],
+            "provider_type":["Physician","NP","RN"],
+            "specialty":    ["Emergency Medicine","Family Medicine","Med/Surg"],
+            "service_line": ["Physician","APP","Nursing"],
+            "department":   ["ED","Clinic","3 West"],
+            "days_worked":  [5,3,""],
+            "daily_rate":   [1800,950,""],
+            "hours_worked": ["","",36],
+            "bill_rate":    ["","",75],
+            "notes":        ["Extended contract","",""]
         })
         st.download_button("Download CSV Template", template_df.to_csv(index=False).encode("utf-8"),
                            "RMCHCS_SpendUpload_Template.csv", "text/csv", type="primary")
@@ -469,46 +527,73 @@ elif page == "Log Spend":
         if uploaded:
             try:
                 udf = pd.read_csv(uploaded)
-                required = ["week_ending","provider_name","provider_type","specialty","service_line","days_worked","daily_rate"]
+                required = ["week_ending","provider_name","provider_type","specialty","service_line"]
                 missing  = [c for c in required if c not in udf.columns]
                 if missing:
                     st.error(f"Missing columns: {', '.join(missing)}. Use the template above.")
                 else:
-                    for col in ["department","notes"]:
+                    for col in ["department","notes","days_worked","daily_rate","hours_worked","bill_rate"]:
                         if col not in udf.columns: udf[col] = ""
-                    udf["days_worked"] = pd.to_numeric(udf["days_worked"], errors="coerce")
-                    udf["daily_rate"]  = pd.to_numeric(udf["daily_rate"],  errors="coerce")
-                    udf["total_spend"] = (udf["days_worked"]*udf["daily_rate"]).round(2)
-                    bad   = udf[udf[["days_worked","daily_rate","total_spend"]].isnull().any(axis=1)]
-                    clean = udf[~udf.index.isin(bad.index)].copy()
+                    for col in ["days_worked","daily_rate","hours_worked","bill_rate"]:
+                        udf[col] = pd.to_numeric(udf[col], errors="coerce")
+
+                    def calc_row_total(row):
+                        sl = str(row.get("service_line",""))
+                        if sl in HOURLY_SERVICE_LINES:
+                            if pd.notna(row["hours_worked"]) and pd.notna(row["bill_rate"]):
+                                return round(row["hours_worked"] * row["bill_rate"], 2)
+                        else:
+                            if pd.notna(row["days_worked"]) and pd.notna(row["daily_rate"]):
+                                return round(row["days_worked"] * row["daily_rate"], 2)
+                        return None
+
+                    udf["total_spend"] = udf.apply(calc_row_total, axis=1)
+                    bad   = udf[udf["total_spend"].isnull()]
+                    clean = udf[udf["total_spend"].notna()].copy()
+
                     st.markdown('<div class="section-header">Step 3: Preview Before Saving</div>', unsafe_allow_html=True)
                     if not bad.empty:
-                        st.warning(f"{len(bad)} row(s) skipped due to missing/invalid days or rate values.")
+                        st.warning(f"{len(bad)} row(s) skipped. Physician/APP rows need days_worked + daily_rate. Nursing/Allied rows need hours_worked + bill_rate.")
                     if clean.empty:
                         st.error("No valid rows to import.")
                     else:
-                        prev = clean[["week_ending","provider_name","provider_type","specialty","service_line","days_worked","daily_rate","total_spend","notes"]].copy()
-                        prev["daily_rate"]  = prev["daily_rate"].apply(lambda x: f"${x:,.2f}")
+                        def fmt_prev_row(row):
+                            sl = str(row.get("service_line",""))
+                            if sl in HOURLY_SERVICE_LINES:
+                                qty  = f"{row['hours_worked']:.1f} hrs" if pd.notna(row["hours_worked"]) else ""
+                                rate = f"${row['bill_rate']:,.2f}/hr"   if pd.notna(row["bill_rate"])    else ""
+                            else:
+                                qty  = f"{row['days_worked']:.1f} days" if pd.notna(row["days_worked"]) else ""
+                                rate = f"${row['daily_rate']:,.2f}/day"  if pd.notna(row["daily_rate"])  else ""
+                            return pd.Series([qty, rate])
+                        prev = clean.copy()
+                        prev[["_qty","_rate"]] = prev.apply(fmt_prev_row, axis=1)
                         prev["total_spend"] = prev["total_spend"].apply(lambda x: f"${x:,.2f}")
-                        prev.columns = ["Week Ending","Provider","Type","Specialty","Service Line","Days","Daily Rate","Total Spend","Notes"]
-                        st.dataframe(prev, use_container_width=True, hide_index=True)
+                        prev_show = prev[["week_ending","provider_name","provider_type","specialty","service_line","_qty","_rate","total_spend","notes"]].copy()
+                        prev_show.columns = ["Week Ending","Provider","Type","Specialty","Service Line","Qty","Rate","Total Spend","Notes"]
+                        st.dataframe(prev_show, use_container_width=True, hide_index=True)
                         bulk_total = clean["total_spend"].sum()
                         st.markdown(f"**{len(clean)} rows ready | Combined total: ${bulk_total:,.2f}**")
                         cb2, _ = st.columns([1,4])
                         with cb2:
                             if st.button("Save All Entries", type="primary", use_container_width=True):
                                 for _, row in clean.iterrows():
-                                    save_entry({"week_ending":str(row["week_ending"]).strip(),
-                                                "provider_name":str(row["provider_name"]).strip(),
-                                                "provider_type":str(row.get("provider_type","")).strip(),
-                                                "specialty":str(row["specialty"]).strip(),
-                                                "service_line":str(row["service_line"]).strip(),
-                                                "department":str(row.get("department","")).strip(),
-                                                "days_worked":float(row["days_worked"]),
-                                                "daily_rate":float(row["daily_rate"]),
-                                                "total_spend":float(row["total_spend"]),
-                                                "notes":str(row.get("notes","")).strip(),
-                                                "logged_at":datetime.now().isoformat()})
+                                    sl = str(row.get("service_line",""))
+                                    save_entry({
+                                        "week_ending":  str(row["week_ending"]).strip(),
+                                        "provider_name":str(row["provider_name"]).strip(),
+                                        "provider_type":str(row.get("provider_type","")).strip(),
+                                        "specialty":    str(row["specialty"]).strip(),
+                                        "service_line": sl,
+                                        "department":   str(row.get("department","")).strip(),
+                                        "days_worked":  float(row["days_worked"]) if pd.notna(row.get("days_worked")) else None,
+                                        "daily_rate":   float(row["daily_rate"])  if pd.notna(row.get("daily_rate"))  else None,
+                                        "hours_worked": float(row["hours_worked"])if pd.notna(row.get("hours_worked"))else None,
+                                        "bill_rate":    float(row["bill_rate"])   if pd.notna(row.get("bill_rate"))   else None,
+                                        "total_spend":  float(row["total_spend"]),
+                                        "notes":        str(row.get("notes","")).strip(),
+                                        "logged_at":    datetime.now().isoformat()
+                                    })
                                 st.success(f"{len(clean)} entries saved. Total: ${bulk_total:,.2f}")
                                 st.rerun()
             except Exception as e:
@@ -542,8 +627,17 @@ elif page == "Manage Entries":
             c1.write(f"**Provider Type:** {row.get('provider_type','N/A')}")
             c2.write(f"**Service Line:** {row['service_line']}")
             c3.write(f"**Department:** {row.get('department','N/A')}")
-            c1.write(f"**Days Worked:** {row['days_worked']}")
-            c2.write(f"**Daily Rate:** ${row['daily_rate']:,.2f}")
+            sl = row.get("service_line","")
+            if sl in HOURLY_SERVICE_LINES:
+                hrs  = row["hours_worked"] if pd.notna(row.get("hours_worked")) else "N/A"
+                rate = f"${row['bill_rate']:,.2f}/hr" if pd.notna(row.get("bill_rate")) else "N/A"
+                c1.write(f"**Hours Worked:** {hrs}")
+                c2.write(f"**Bill Rate:** {rate}")
+            else:
+                days = row["days_worked"] if pd.notna(row.get("days_worked")) else "N/A"
+                rate = f"${row['daily_rate']:,.2f}/day" if pd.notna(row.get("daily_rate")) else "N/A"
+                c1.write(f"**Days Worked:** {days}")
+                c2.write(f"**Daily Rate:** {rate}")
             c3.write(f"**Total Spend:** ${row['total_spend']:,.2f}")
             if row.get("notes"): st.write(f"**Notes:** {row['notes']}")
             if st.button("Delete Entry", key=f"del_{row['id']}", type="secondary"):
@@ -583,9 +677,21 @@ elif page == "Generate Report":
     m1.metric("Week Total Spend", f"${week_data['total_spend'].sum():,.2f}")
     m2.metric("Providers",  week_data["provider_name"].nunique())
     m3.metric("Specialties",week_data["specialty"].nunique())
-    st.dataframe(week_data[["provider_name","specialty","service_line","days_worked","daily_rate","total_spend"]].rename(
+    rpt_disp = week_data.copy()
+    def fmt_report_row(row):
+        sl = row.get("service_line","")
+        if sl in HOURLY_SERVICE_LINES:
+            qty  = f"{row['hours_worked']:.1f} hrs" if pd.notna(row.get("hours_worked")) else ""
+            rate = f"${row['bill_rate']:,.2f}/hr"   if pd.notna(row.get("bill_rate"))    else ""
+        else:
+            qty  = f"{row['days_worked']:.1f} days" if pd.notna(row.get("days_worked")) else ""
+            rate = f"${row['daily_rate']:,.2f}/day"  if pd.notna(row.get("daily_rate"))  else ""
+        return pd.Series([qty, rate])
+    rpt_disp[["_qty","_rate"]] = rpt_disp.apply(fmt_report_row, axis=1)
+    rpt_disp["total_spend"] = rpt_disp["total_spend"].apply(lambda x: f"${x:,.2f}")
+    st.dataframe(rpt_disp[["provider_name","specialty","service_line","_qty","_rate","total_spend"]].rename(
         columns={"provider_name":"Provider","specialty":"Specialty","service_line":"Service Line",
-                 "days_worked":"Days","daily_rate":"Daily Rate","total_spend":"Total Spend"}),
+                 "_qty":"Days / Hours","_rate":"Rate","total_spend":"Total Spend"}),
         use_container_width=True, hide_index=True)
 
     st.markdown("<div style='height:0.5rem'></div>", unsafe_allow_html=True)
