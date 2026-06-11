@@ -828,14 +828,27 @@ if page == "Dashboard":
         st.markdown('<div class="section-header">Weekly Spend Trend</div>', unsafe_allow_html=True)
         st.markdown('<div class="section-sub">Total spend logged per week ending date</div>', unsafe_allow_html=True)
         weekly = df.groupby("week_ending")["total_spend"].sum().reset_index().sort_values("week_ending")
+        # Use string labels so Plotly treats weeks as discrete categories, not a continuous date axis
+        weekly["week_label"] = weekly["week_ending"].astype(str)
         fig = go.Figure()
-        fig.add_trace(go.Bar(x=weekly["week_ending"], y=weekly["total_spend"], marker_color="#1a3a5c", marker_line_width=0,
-                             hovertemplate="<b>Week Ending:</b> %{x}<br><b>Spend:</b> $%{y:,.0f}<extra></extra>"))
-        fig.add_trace(go.Scatter(x=weekly["week_ending"], y=weekly["total_spend"], mode="lines+markers",
-                                  line=dict(color="#3b82f6", width=2.5), marker=dict(size=6), hoverinfo="skip"))
-        fig.update_layout(plot_bgcolor="white", paper_bgcolor="white", margin=dict(l=0,r=0,t=10,b=0), height=280,
-                          xaxis=dict(showgrid=False, tickfont=dict(size=11)),
-                          yaxis=dict(showgrid=True, gridcolor="#f1f5f9", tickprefix="$", tickfont=dict(size=11)), showlegend=False)
+        fig.add_trace(go.Bar(
+            x=weekly["week_label"], y=weekly["total_spend"],
+            marker_color="#1a3a5c", marker_line_width=0,
+            hovertemplate="<b>Week Ending:</b> %{x}<br><b>Spend:</b> $%{y:,.0f}<extra></extra>"
+        ))
+        fig.add_trace(go.Scatter(
+            x=weekly["week_label"], y=weekly["total_spend"], mode="lines+markers",
+            line=dict(color="#3b82f6", width=2.5), marker=dict(size=7, color="#3b82f6"),
+            hoverinfo="skip"
+        ))
+        fig.update_layout(
+            plot_bgcolor="white", paper_bgcolor="white",
+            margin=dict(l=0,r=0,t=10,b=0), height=280,
+            bargap=0.35,
+            xaxis=dict(showgrid=False, tickfont=dict(size=11), type="category"),
+            yaxis=dict(showgrid=True, gridcolor="#f1f5f9", tickprefix="$", tickfont=dict(size=11)),
+            showlegend=False
+        )
         st.plotly_chart(fig, use_container_width=True)
 
     with c2:
