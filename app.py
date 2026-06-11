@@ -1776,21 +1776,120 @@ elif page == "Requisitions":
 
     tab_view, tab_add, tab_import = st.tabs(["All Requisitions", "Add Requisition", "Import from Excel"])
 
+    # ── All Requisitions ─────────────────────────────────────────────────────
+    with tab_view:
+        st.markdown("<div style='height:0.75rem'></div>", unsafe_allow_html=True)
+        if df_reqs.empty:
+            st.info("No requisitions yet. Use the Add Requisition tab to add one, or Import from Excel.")
+        else:
+            # Filter bar
+            fc1,fc2,fc3,fc4 = st.columns([2,2,2,2])
+            filt_status = fc1.selectbox("Status", ["All"] + REQ_STATUSES, key="req_filt_status")
+            filt_disc   = fc2.selectbox("Discipline", ["All"] + DISCIPLINES, key="req_filt_disc")
+            filt_type   = fc3.selectbox("Type", ["All"] + REQ_TYPES, key="req_filt_type")
+            filt_search = fc4.text_input("Search specialty / notes", key="req_search")
+
+            view_reqs = df_reqs.copy()
+            if filt_status != "All": view_reqs = view_reqs[view_reqs["status"]==filt_status]
+            if filt_disc   != "All": view_reqs = view_reqs[view_reqs["discipline"]==filt_disc]
+            if filt_type   != "All": view_reqs = view_reqs[view_reqs["req_type"]==filt_type]
+            if filt_search:
+                mask = (view_reqs["specialty"].str.contains(filt_search, case=False, na=False) |
+                        view_reqs["notes"].str.contains(filt_search, case=False, na=False))
+                view_reqs = view_reqs[mask]
+
+            view_reqs = view_reqs.sort_values("req_open_date", ascending=False).reset_index(drop=True)
+            st.markdown(f"**{len(view_reqs)} requisitions** in view")
+
+            # Status badge helper
+            STATUS_DOT = {"Open":"🟢","On Hold":"🟡","Max Submissions":"🟠","Filled":"🔵","Closed":"⚫"}
+
+            # Table view
+            disp_reqs = view_reqs.copy()
+            disp_reqs["_status"] = disp_reqs["status"].apply(lambda s: f"{STATUS_DOT.get(s,'⚪')} {s}")
+            disp_reqs["bill_rate"] = disp_reqs["bill_rate"].apply(lambda x: f"${float(x):,.0f}/hr" if x else "")
+            show_cols = ["_status","discipline","specialty","shift","req_type","bill_rate","slots_open","req_open_date","notes"]
+            show_cols = [c for c in show_cols if c in disp_reqs.columns]
+            st.dataframe(
+                disp_reqs[show_cols].rename(columns={
+                    "_status":"Status","discipline":"Discipline","specialty":"Specialty",
+                    "shift":"Shift","req_type":"Type","bill_rate":"Bill Rate",
+                    "slots_open":"Slots","req_open_date":"Opened","notes":"Notes"
+                }),
+                use_container_width=True, hide_index=True, height=320
+            )
+
+            st.markdown("---")
+            st.markdown("**Update a Requisition**")
+            st.caption("Select a requisition below to update its status, notes, or delete it.")
+
+            req_labels = [f"{STATUS_DOT.get(r.get('status',''),'⚪')} {r.get('specialty','')} | {r.get('discipline','')} | {r.get('req_type','')} | Opened: {r.get('req_open_date','')}"
+                          for _, r in view_reqs.iterrows()]
+            selected_req_label = st.selectbox("Select Requisition", ["— select —"] + req_labels, key="req_select")
+
+            if selected_req_label != "— select —":
+                sel_idx = req_labels.index(selected_req_label)
+                sel_req = view_reqs.iloc[sel_idx]
+
+                with st.container():
+                    ed1,ed2,ed3 = st.columns(3)
+                    ed_specialty = ed1.text_input("Specialty", value=sel_req.get("specialty",""), key="ed_spec")
+                    ed_shift     = ed2.text_input("Shift", value=sel_req.get("shift",""), key="ed_shift")
+                    ed_slots     = ed3.number_input("Slots Open", min_value=0, value=int(sel_req.get("slots_open",1)), key="ed_slots")
+                    ed4,ed5,ed6 = st.columns(3)
+                    ed_status   = ed4.selectbox("Status", REQ_STATUSES,
+                                                index=REQ_STATUSES.index(sel_req["status"]) if sel_req.get("status") in REQ_STATUSES else 0,
+                                                key="ed_status")
+                    ed_type     = ed5.selectbox("Type", REQ_TYPES,
+                                                index=REQ_TYPES.index(sel_req["req_type"]) if sel_req.get("req_type") in REQ_TYPES else 0,
+                                                key="ed_type")
+                    ed_rate     = ed6.number_input("Bill Rate", min_value=0.0,
+                                                   value=float(sel_req.get("bill_rate",0) or 0),
+                                                   step=1.0, key="ed_rate")
+                    ed_notes    = st.text_area("Notes", value=sel_req.get("notes",""), height=70, key="ed_notes")
+
+                    # Candidates linked to this req
+                    if not df_cands.empty and "req_id" in df_cands.columns:
+                        rc = df_cands[df_cands["req_id"]==sel_req["id"]]
+                        if not rc.empty:
+                            st.markdown(f"**{len(rc)} candidate(s) on this req:**")
+                            rc_disp = rc[["candidate_name","source_company","status","date_sent","start_date"]].copy()
+                            rc_disp.columns = ["Candidate","Source","Status","Date Sent","Start Date"]
+                            st.dataframe(rc_disp, use_container_width=True, hide_index=True)
+
+                    sb1,sb2,_ = st.columns([1,1,3])
+                    with sb1:
+                        if st.button("Save Changes", type="primary", use_container_width=True, key="req_save"):
+                            _update_record(REQ_FILE, sel_req["id"], {
+                                "specialty": ed_specialty, "shift": ed_shift,
+                                "slots_open": ed_slots, "status": ed_status,
+                                "req_type": ed_type, "bill_rate": ed_rate,
+                                "notes": ed_notes
+                            })
+                            st.success("Requisition updated.")
+                            st.rerun()
+                    with sb2:
+                        if st.button("Delete", type="secondary", use_container_width=True, key="req_del"):
+                            _delete_record(REQ_FILE, sel_req["id"])
+                            st.success("Deleted.")
+                            st.rerun()
+
+    # ── Add Requisition ──────────────────────────────────────────────────────
     with tab_add:
         st.markdown("<div style='height:0.75rem'></div>", unsafe_allow_html=True)
         c1,c2 = st.columns(2)
         with c1:
-            r_specialty   = st.text_input("Specialty", placeholder="e.g. ER RN, Ortho Surgery, Surg Tech")
-            r_job_title   = st.text_input("Job Title", placeholder="e.g. OR RN, Nuclear Med Tech")
-            r_discipline  = st.selectbox("Discipline", DISCIPLINES)
-            r_shift       = st.text_input("Shift", placeholder="e.g. 12H Nights, 8H Days")
+            r_specialty  = st.text_input("Specialty", placeholder="e.g. ER RN, Ortho Surgery, Surg Tech")
+            r_job_title  = st.text_input("Job Title", placeholder="e.g. OR RN, Nuclear Med Tech")
+            r_discipline = st.selectbox("Discipline", DISCIPLINES)
+            r_shift      = st.text_input("Shift", placeholder="e.g. 12H Nights, 8H Days")
         with c2:
-            r_req_type    = st.selectbox("Type", REQ_TYPES)
-            r_bill_rate   = st.number_input("Bill Rate ($/hr)", min_value=0.0, value=83.0, step=1.0)
-            r_slots       = st.number_input("Slots Open", min_value=1, value=1, step=1)
-            r_open_date   = st.date_input("Req Open Date", value=date.today())
-        r_status  = st.selectbox("Status", REQ_STATUSES)
-        r_notes   = st.text_area("Notes", placeholder="Client contact, context, hold reason...", height=80)
+            r_req_type  = st.selectbox("Type", REQ_TYPES)
+            r_bill_rate = st.number_input("Bill Rate ($/hr)", min_value=0.0, value=83.0, step=1.0)
+            r_slots     = st.number_input("Slots Open", min_value=1, value=1, step=1)
+            r_open_date = st.date_input("Req Open Date", value=date.today())
+        r_status = st.selectbox("Status", REQ_STATUSES)
+        r_notes  = st.text_area("Notes", placeholder="Client contact, context, hold reason...", height=80)
         rb1, _ = st.columns([1,4])
         with rb1:
             if st.button("Save Requisition", type="primary", use_container_width=True):
@@ -1804,65 +1903,8 @@ elif page == "Requisitions":
                         "slots_open": r_slots, "req_open_date": str(r_open_date),
                         "status": r_status, "notes": r_notes.strip()
                     })
-                    st.success(f"Requisition saved: {r_specialty} | {r_req_type} | {r_status}")
+                    st.success(f"Saved: {r_specialty} | {r_req_type} | {r_status}")
                     st.rerun()
-
-    with tab_view:
-        st.markdown("<div style='height:0.75rem'></div>", unsafe_allow_html=True)
-        if df_reqs.empty:
-            st.info("No requisitions yet. Use the Add Requisition tab.")
-        else:
-            # Filters
-            fc1,fc2,fc3 = st.columns(3)
-            filt_status = fc1.selectbox("Status", ["All"] + REQ_STATUSES, key="req_filt_status")
-            filt_disc   = fc2.selectbox("Discipline", ["All"] + DISCIPLINES, key="req_filt_disc")
-            filt_type   = fc3.selectbox("Type", ["All"] + REQ_TYPES, key="req_filt_type")
-
-            view_reqs = df_reqs.copy()
-            if filt_status != "All": view_reqs = view_reqs[view_reqs["status"]==filt_status]
-            if filt_disc   != "All": view_reqs = view_reqs[view_reqs["discipline"]==filt_disc]
-            if filt_type   != "All": view_reqs = view_reqs[view_reqs["req_type"]==filt_type]
-
-            st.markdown(f"**{len(view_reqs)} requisitions** in current view")
-
-            for _, req in view_reqs.sort_values("req_open_date", ascending=False).iterrows():
-                status_color = {"Open":"🟢","On Hold":"🟡","Max Submissions":"🟠",
-                                "Filled":"🔵","Closed":"⚫"}.get(req.get("status",""), "⚪")
-                with st.expander(f"{status_color} {req.get('specialty','')} | {req.get('job_title','')} | {req.get('req_type','')} | {req.get('status','')}"):
-                    ec1,ec2,ec3 = st.columns(3)
-                    ec1.write(f"**Discipline:** {req.get('discipline','')}")
-                    ec2.write(f"**Shift:** {req.get('shift','')}")
-                    ec3.write(f"**Bill Rate:** ${req.get('bill_rate',0):,.2f}/hr")
-                    ec1.write(f"**Slots Open:** {req.get('slots_open','')}")
-                    ec2.write(f"**Req Opened:** {req.get('req_open_date','')}")
-                    ec3.write(f"**Type:** {req.get('req_type','')}")
-                    if req.get("notes"): st.write(f"**Notes:** {req.get('notes','')}")
-
-                    # Candidates against this req
-                    if not df_cands.empty and "req_id" in df_cands.columns:
-                        req_cands = df_cands[df_cands["req_id"]==req["id"]]
-                        if not req_cands.empty:
-                            st.markdown(f"**{len(req_cands)} candidate(s) submitted:**")
-                            for _, rc in req_cands.iterrows():
-                                src = f" [{rc.get('source_company','')}]" if rc.get('source_company') else ""
-                                st.markdown(f"- {rc.get('candidate_name','')}{src} — {rc.get('status','')} | Sent: {rc.get('date_sent','')}")
-
-                    # Status update
-                    new_status = st.selectbox("Update Status", REQ_STATUSES,
-                                              index=REQ_STATUSES.index(req["status"]) if req.get("status") in REQ_STATUSES else 0,
-                                              key=f"rs_{req['id']}")
-                    ub1,ub2 = st.columns([1,1])
-                    with ub1:
-                        if st.button("Update Status", key=f"ru_{req['id']}", type="secondary"):
-                            _update_record(REQ_FILE, req["id"], {"status": new_status})
-                            st.success("Status updated.")
-                            st.rerun()
-                    with ub2:
-                        if st.button("Delete Req", key=f"rd_{req['id']}", type="secondary"):
-                            _delete_record(REQ_FILE, req["id"])
-                            st.success("Deleted.")
-                            st.rerun()
-
 
     with tab_import:
         st.markdown("<div style='height:0.75rem'></div>", unsafe_allow_html=True)
@@ -1934,9 +1976,128 @@ elif page == "Candidates":
 
     tab_view, tab_add = st.tabs(["All Candidates", "Add Candidate"])
 
+    # ── All Candidates ───────────────────────────────────────────────────────
+    with tab_view:
+        st.markdown("<div style='height:0.75rem'></div>", unsafe_allow_html=True)
+        if df_cands.empty:
+            st.info("No candidates yet. Use the Add Candidate tab or import from Excel on the Requisitions page.")
+        else:
+            CAND_STATUS_DOT = {
+                "Placed":"✅","Accepted":"🟢","Offered":"🟡",
+                "Clinical Call Complete":"🔵","Clinical Call Scheduled":"🔵",
+                "Submitted":"⚪","Declined by Candidate":"🔴",
+                "Declined by Client":"🔴","Cancelled":"⚫"
+            }
+
+            # Filters
+            fc1,fc2,fc3,fc4 = st.columns([2,2,2,2])
+            filt_cs   = fc1.selectbox("Status", ["All"] + CAND_STATUSES, key="cf_status")
+            filt_src  = fc2.selectbox("Source", ["All"] + SOURCE_COS, key="cf_source")
+            filt_disc = fc3.selectbox("Discipline", ["All"] + DISCIPLINES, key="cf_disc")
+            filt_srch = fc4.text_input("Search name / specialty", key="cf_search")
+
+            vc = df_cands.copy()
+            if filt_cs   != "All": vc = vc[vc["status"]==filt_cs]
+            if filt_src  != "All": vc = vc[vc["source_company"]==filt_src]
+            if filt_disc != "All": vc = vc[vc["discipline"]==filt_disc]
+            if filt_srch:
+                mask = (vc["candidate_name"].str.contains(filt_srch, case=False, na=False) |
+                        vc["specialty"].str.contains(filt_srch, case=False, na=False))
+                vc = vc[mask]
+
+            vc = vc.sort_values("date_sent", ascending=False).reset_index(drop=True)
+            st.markdown(f"**{len(vc)} candidates** in view")
+
+            # Days in pipeline
+            def _days_in(d):
+                try: return (date.today() - date.fromisoformat(str(d))).days
+                except: return ""
+            vc["_days"] = vc["date_sent"].apply(_days_in)
+            vc["_status_fmt"] = vc["status"].apply(lambda s: f"{CAND_STATUS_DOT.get(s,'⚪')} {s}")
+            vc["_src_fmt"]    = vc.apply(lambda r: f"🔷 {r['source_company']}" if r.get("source_company")=="Springboard" else r.get("source_company",""), axis=1)
+
+            show_c = ["_status_fmt","candidate_name","_src_fmt","discipline","specialty",
+                      "date_sent","date_offered","date_accepted","start_date","_days","rmchcs_notes"]
+            show_c = [c for c in show_c if c in vc.columns]
+            st.dataframe(
+                vc[show_c].rename(columns={
+                    "_status_fmt":"Status","candidate_name":"Candidate","_src_fmt":"Source",
+                    "discipline":"Discipline","specialty":"Specialty","date_sent":"Sent",
+                    "date_offered":"Offered","date_accepted":"Accepted",
+                    "start_date":"Start Date","_days":"Days in Pipe","rmchcs_notes":"RMCHCS Notes"
+                }),
+                use_container_width=True, hide_index=True, height=340
+            )
+
+            st.markdown("---")
+            st.markdown("**Update a Candidate**")
+            st.caption("Select a candidate below to update status, timeline dates, notes, and credentialing.")
+
+            cand_labels = [f"{CAND_STATUS_DOT.get(r.get('status',''),'⚪')} {r.get('candidate_name','')} | {r.get('specialty','')} | {r.get('source_company','')} | Sent: {r.get('date_sent','')}"
+                           for _, r in vc.iterrows()]
+            sel_cand_label = st.selectbox("Select Candidate", ["— select —"] + cand_labels, key="cand_select")
+
+            if sel_cand_label != "— select —":
+                sel_idx  = cand_labels.index(sel_cand_label)
+                sel_cand = vc.iloc[sel_idx]
+
+                st.markdown("**Status & Timeline**")
+                u1,u2,u3,u4 = st.columns(4)
+                u_status   = u1.selectbox("Status", CAND_STATUSES,
+                                           index=CAND_STATUSES.index(sel_cand["status"]) if sel_cand.get("status") in CAND_STATUSES else 0,
+                                           key="u_status")
+                u_offered  = u2.text_input("Date Offered",   value=sel_cand.get("date_offered",""),  key="u_offered")
+                u_accepted = u3.text_input("Date Accepted",  value=sel_cand.get("date_accepted",""), key="u_accepted")
+                u_start    = u4.text_input("Start Date",     value=sel_cand.get("start_date",""),    key="u_start")
+
+                # Turnaround display
+                if sel_cand.get("date_sent") and u_accepted:
+                    try:
+                        tat = (date.fromisoformat(u_accepted) - date.fromisoformat(str(sel_cand["date_sent"]))).days
+                        st.caption(f"Submission → Acceptance: **{tat} days**")
+                    except: pass
+
+                n1,n2 = st.columns(2)
+                u_notes       = n1.text_area("Internal Notes",  value=sel_cand.get("notes",""),        height=70, key="u_notes")
+                u_rmchcs      = n2.text_area("RMCHCS Notes",    value=sel_cand.get("rmchcs_notes",""), height=70, key="u_rmchcs")
+
+                st.markdown("**Credentialing**")
+                cr1,cr2,cr3,cr4 = st.columns(4)
+                u_cred_co     = cr1.text_input("Cred Company",         value=sel_cand.get("cred_company",""),  key="u_cred_co")
+                u_cred_due    = cr2.text_input("Due Date (YYYY-MM-DD)", value=sel_cand.get("cred_due_date",""),key="u_cred_due")
+                u_cred_status = cr3.selectbox("Cred Status", [""]+CRED_STATUSES,
+                                               index=([""]+CRED_STATUSES).index(sel_cand.get("cred_status","")) if sel_cand.get("cred_status","") in [""]+CRED_STATUSES else 0,
+                                               key="u_cred_status")
+                u_cred_nm     = cr4.checkbox("NM Fingerprint", value=bool(sel_cand.get("cred_nm_fingerprint",False)), key="u_cred_nm")
+                u_cred_notes  = st.text_area("Credentialing Notes", value=sel_cand.get("cred_notes",""), height=60, key="u_cred_notes")
+
+                sb1,sb2,_ = st.columns([1,1,3])
+                with sb1:
+                    if st.button("Save Updates", type="primary", use_container_width=True, key="cand_save"):
+                        _update_record(CANDIDATE_FILE, sel_cand["id"], {
+                            "status":              u_status,
+                            "date_offered":        u_offered,
+                            "date_accepted":       u_accepted,
+                            "start_date":          u_start,
+                            "notes":               u_notes,
+                            "rmchcs_notes":        u_rmchcs,
+                            "cred_company":        u_cred_co,
+                            "cred_due_date":       u_cred_due,
+                            "cred_status":         u_cred_status,
+                            "cred_nm_fingerprint": u_cred_nm,
+                            "cred_notes":          u_cred_notes
+                        })
+                        st.success("Updated.")
+                        st.rerun()
+                with sb2:
+                    if st.button("Delete", type="secondary", use_container_width=True, key="cand_del"):
+                        _delete_record(CANDIDATE_FILE, sel_cand["id"])
+                        st.success("Deleted.")
+                        st.rerun()
+
+    # ── Add Candidate ────────────────────────────────────────────────────────
     with tab_add:
         st.markdown("<div style='height:0.75rem'></div>", unsafe_allow_html=True)
-        st.markdown("**Candidate Info**")
         ca1,ca2 = st.columns(2)
         with ca1:
             c_name      = st.text_input("Candidate Name", placeholder="First Last")
@@ -1944,42 +2105,38 @@ elif page == "Candidates":
             c_disc      = st.selectbox("Discipline", DISCIPLINES, key="c_disc")
             c_specialty = st.text_input("Specialty", placeholder="e.g. ER RN, Ortho Surgery")
         with ca2:
-            # Link to req
             req_options = ["None"]
             if not df_reqs.empty:
-                req_options += [f"{r['specialty']} | {r.get('job_title','')} | {r.get('status','')} [{r['id'][:8]}]"
+                req_options += [f"{r['specialty']} | {r.get('discipline','')} | {r.get('status','')} [{r['id'][:8]}]"
                                 for _, r in df_reqs.iterrows()]
-            linked_req_label = st.selectbox("Link to Requisition", req_options)
+            linked_req_label = st.selectbox("Link to Requisition (optional)", req_options)
             linked_req_id = None
             if linked_req_label != "None":
                 short_id = linked_req_label.split("[")[-1].rstrip("]")
                 matches = df_reqs[df_reqs["id"].str.startswith(short_id)]
                 if not matches.empty:
                     linked_req_id = matches.iloc[0]["id"]
-
-            c_status    = st.selectbox("Current Status", CAND_STATUSES)
-            c_shift     = st.text_input("Shift", placeholder="e.g. 12H Nights")
+            c_status = st.selectbox("Current Status", CAND_STATUSES)
+            c_shift  = st.text_input("Shift", placeholder="e.g. 12H Nights")
 
         st.markdown("---")
         st.markdown("**Timeline**")
         cb1,cb2,cb3 = st.columns(3)
         with cb1:
-            c_date_sent     = st.date_input("Date Sent to Client", value=date.today())
-            c_date_clin     = st.date_input("Clinical Call Date", value=None)
+            c_date_sent = st.date_input("Date Sent to Client", value=date.today())
+            c_date_clin = st.date_input("Clinical Call Date", value=None)
         with cb2:
             c_date_offered  = st.date_input("Date Offered", value=None)
             c_date_accepted = st.date_input("Date Accepted", value=None)
         with cb3:
-            c_start_date    = st.date_input("Start Date", value=None)
+            c_start_date = st.date_input("Start Date", value=None)
             if c_date_sent and c_date_accepted:
-                tat = (c_date_accepted - c_date_sent).days
-                st.metric("Submission → Acceptance", f"{tat} days")
+                st.metric("Submission → Acceptance", f"{(c_date_accepted - c_date_sent).days} days")
 
         st.markdown("---")
-        st.markdown("**Notes**")
         cn1,cn2 = st.columns(2)
-        c_notes       = cn1.text_area("Internal Notes", height=80)
-        c_rmchcs_notes= cn2.text_area("RMCHCS Notes", height=80, placeholder="Backfill for X, Curry calling, etc.")
+        c_notes        = cn1.text_area("Internal Notes", height=80)
+        c_rmchcs_notes = cn2.text_area("RMCHCS Notes", height=80, placeholder="Backfill for X, Curry calling, etc.")
 
         save_b, _ = st.columns([1,4])
         with save_b:
@@ -1988,113 +2145,21 @@ elif page == "Candidates":
                     st.error("Candidate name is required.")
                 else:
                     _save_record(CANDIDATE_FILE, {
-                        "req_id":          linked_req_id,
-                        "candidate_name":  c_name.strip(),
-                        "source_company":  c_source,
-                        "discipline":      c_disc,
-                        "specialty":       c_specialty.strip(),
-                        "status":          c_status,
-                        "date_sent":       str(c_date_sent) if c_date_sent else "",
-                        "date_clinical_call": str(c_date_clin) if c_date_clin else "",
-                        "date_offered":    str(c_date_offered) if c_date_offered else "",
-                        "date_accepted":   str(c_date_accepted) if c_date_accepted else "",
-                        "start_date":      str(c_start_date) if c_start_date else "",
-                        "notes":           c_notes.strip(),
-                        "rmchcs_notes":    c_rmchcs_notes.strip(),
-                        "cred_company":    "", "cred_due_date": "",
-                        "cred_status":     "", "cred_nm_fingerprint": False,
-                        "cred_notes":      ""
+                        "req_id": linked_req_id,
+                        "candidate_name": c_name.strip(), "source_company": c_source,
+                        "discipline": c_disc, "specialty": c_specialty.strip(),
+                        "status": c_status,
+                        "date_sent":          str(c_date_sent)     if c_date_sent     else "",
+                        "date_clinical_call": str(c_date_clin)     if c_date_clin     else "",
+                        "date_offered":       str(c_date_offered)  if c_date_offered  else "",
+                        "date_accepted":      str(c_date_accepted) if c_date_accepted else "",
+                        "start_date":         str(c_start_date)    if c_start_date    else "",
+                        "notes": c_notes.strip(), "rmchcs_notes": c_rmchcs_notes.strip(),
+                        "cred_company":"","cred_due_date":"",
+                        "cred_status":"","cred_nm_fingerprint":False,"cred_notes":""
                     })
                     st.success(f"Saved: {c_name} | {c_specialty} | {c_status}")
                     st.rerun()
-
-    with tab_view:
-        st.markdown("<div style='height:0.75rem'></div>", unsafe_allow_html=True)
-        if df_cands.empty:
-            st.info("No candidates yet. Use the Add Candidate tab.")
-        else:
-            fc1,fc2,fc3 = st.columns(3)
-            filt_cs  = fc1.selectbox("Status", ["All"] + CAND_STATUSES, key="cf_status")
-            filt_src = fc2.selectbox("Source", ["All"] + SOURCE_COS, key="cf_source")
-            filt_csp = fc3.text_input("Search Name / Specialty", key="cf_search")
-
-            vc = df_cands.copy()
-            if filt_cs  != "All": vc = vc[vc["status"]==filt_cs]
-            if filt_src != "All": vc = vc[vc["source_company"]==filt_src]
-            if filt_csp:
-                mask = (vc["candidate_name"].str.contains(filt_csp, case=False, na=False) |
-                        vc["specialty"].str.contains(filt_csp, case=False, na=False))
-                vc = vc[mask]
-
-            st.markdown(f"**{len(vc)} candidates** in current view")
-
-            for _, cand in vc.sort_values("date_sent", ascending=False).iterrows():
-                src_badge = f" 🔷 Springboard" if cand.get("source_company")=="Springboard" else f" [{cand.get('source_company','')}]"
-                status_icon = {"Placed":"✅","Accepted":"🟢","Offered":"🟡",
-                               "Clinical Call Scheduled":"🔵","Submitted":"⚪",
-                               "Declined by Candidate":"🔴","Declined by Client":"🔴",
-                               "Cancelled":"⚫"}.get(cand.get("status",""),"⚪")
-                with st.expander(f"{status_icon} {cand.get('candidate_name','')}{src_badge} | {cand.get('specialty','')} | {cand.get('status','')}"):
-                    d1,d2,d3 = st.columns(3)
-                    d1.write(f"**Sent:** {cand.get('date_sent','')}")
-                    d2.write(f"**Clinical Call:** {cand.get('date_clinical_call','') or 'N/A'}")
-                    d3.write(f"**Offered:** {cand.get('date_offered','') or 'N/A'}")
-                    d1.write(f"**Accepted:** {cand.get('date_accepted','') or 'N/A'}")
-                    d2.write(f"**Start Date:** {cand.get('start_date','') or 'N/A'}")
-
-                    # Turnaround
-                    if cand.get("date_sent") and cand.get("date_accepted"):
-                        try:
-                            tat = (date.fromisoformat(str(cand["date_accepted"])) -
-                                   date.fromisoformat(str(cand["date_sent"]))).days
-                            d3.write(f"**Submit → Accept:** {tat} days")
-                        except: pass
-
-                    if cand.get("rmchcs_notes"): st.write(f"**RMCHCS Notes:** {cand.get('rmchcs_notes','')}")
-                    if cand.get("notes"):         st.write(f"**Internal Notes:** {cand.get('notes','')}")
-
-                    # Credentialing section
-                    st.markdown("**Credentialing**")
-                    cr1,cr2,cr3,cr4 = st.columns(4)
-                    new_cred_co     = cr1.text_input("Cred Company", value=cand.get("cred_company",""), key=f"cc_{cand['id']}")
-                    new_cred_due    = cr2.text_input("Due Date (YYYY-MM-DD)", value=cand.get("cred_due_date",""), key=f"cd_{cand['id']}")
-                    new_cred_status = cr3.selectbox("Cred Status", [""]+CRED_STATUSES,
-                                                     index=([""]+CRED_STATUSES).index(cand.get("cred_status","")) if cand.get("cred_status","") in [""]+CRED_STATUSES else 0,
-                                                     key=f"cs_{cand['id']}")
-                    new_cred_nm     = cr4.checkbox("NM Fingerprint", value=bool(cand.get("cred_nm_fingerprint",False)), key=f"cn_{cand['id']}")
-                    new_cred_notes  = st.text_area("Credentialing Notes", value=cand.get("cred_notes",""), height=60, key=f"cno_{cand['id']}")
-
-                    # Status update
-                    st.markdown("**Update**")
-                    up1,up2,up3,up4 = st.columns(4)
-                    new_cand_status = up1.selectbox("Candidate Status", CAND_STATUSES,
-                                                     index=CAND_STATUSES.index(cand["status"]) if cand.get("status") in CAND_STATUSES else 0,
-                                                     key=f"csu_{cand['id']}")
-                    new_date_offered  = up2.text_input("Date Offered", value=cand.get("date_offered",""), key=f"cdo_{cand['id']}")
-                    new_date_accepted = up3.text_input("Date Accepted", value=cand.get("date_accepted",""), key=f"cda_{cand['id']}")
-                    new_start         = up4.text_input("Start Date", value=cand.get("start_date",""), key=f"csd_{cand['id']}")
-
-                    sb1,sb2 = st.columns([1,1])
-                    with sb1:
-                        if st.button("Save Updates", key=f"cu_{cand['id']}", type="primary"):
-                            _update_record(CANDIDATE_FILE, cand["id"], {
-                                "status":              new_cand_status,
-                                "date_offered":        new_date_offered,
-                                "date_accepted":       new_date_accepted,
-                                "start_date":          new_start,
-                                "cred_company":        new_cred_co,
-                                "cred_due_date":       new_cred_due,
-                                "cred_status":         new_cred_status,
-                                "cred_nm_fingerprint": new_cred_nm,
-                                "cred_notes":          new_cred_notes
-                            })
-                            st.success("Updated.")
-                            st.rerun()
-                    with sb2:
-                        if st.button("Delete", key=f"cdel_{cand['id']}", type="secondary"):
-                            _delete_record(CANDIDATE_FILE, cand["id"])
-                            st.success("Deleted.")
-                            st.rerun()
 
 
 # ══════════════════════════════════════════════════════════════════════════════
