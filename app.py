@@ -133,7 +133,11 @@ def load_candidates() -> pd.DataFrame:
 REQ_STATUSES  = ["Open","On Hold","Max Submissions","Filled","Closed"]
 CAND_STATUSES = ["Submitted","Clinical Call Scheduled","Clinical Call Complete",
                   "Offered","Accepted","Declined by Candidate","Declined by Client",
-                  "Placed","Cancelled"]
+                  "Placed","Cancelled","Job Closed"]
+
+# Statuses that are still "active" — candidates in these get auto-closed when req closes
+ACTIVE_CAND_STATUSES = {"Submitted","Clinical Call Scheduled","Clinical Call Complete",
+                         "Offered","Accepted"}
 CRED_STATUSES = ["Pending","Clear","Cancelled","Hold"]
 SOURCE_COS    = ["Vista","Springboard","Trustaff","Other IGV Brand","External"]
 DISCIPLINES   = ["Nursing","Allied Health","Physician","APP","Locums"]
@@ -1833,12 +1837,29 @@ elif page == "Requisitions":
                                "Shift":"shift","Type":"req_type","Bill Rate":"bill_rate",
                                "Slots":"slots_open","Opened":"req_open_date","Notes":"notes"}
                     saved = 0
+                    cascaded = 0
                     for _, row in edited_reqs.iterrows():
-                        rec_id = row["_id"]
+                        rec_id  = row["_id"]
                         updates = {col_map[k]: row[k] for k in col_map if k in row}
                         _update_record(REQ_FILE, rec_id, updates)
                         saved += 1
-                    st.success(f"{saved} requisition(s) saved.")
+                        # Cascade: if req just set to Closed or Filled, close active candidates
+                        if updates.get("status") in ("Closed", "Filled"):
+                            orig = df_reqs[df_reqs["id"]==rec_id]
+                            orig_status = orig.iloc[0]["status"] if not orig.empty else ""
+                            if orig_status != updates["status"]:  # only if status actually changed
+                                cands_data = _load(CANDIDATE_FILE)
+                                for c in cands_data:
+                                    if c.get("req_id") == rec_id and c.get("status") in ACTIVE_CAND_STATUSES:
+                                        c["status"] = "Job Closed"
+                                        c["updated_at"] = datetime.now().isoformat()
+                                        cascaded += 1
+                                with open(CANDIDATE_FILE, "w") as f:
+                                    json.dump(cands_data, f, indent=2)
+                    msg = f"{saved} requisition(s) saved."
+                    if cascaded:
+                        msg += f" {cascaded} candidate(s) automatically set to Job Closed."
+                    st.success(msg)
                     st.rerun()
             with sc2:
                 del_req_labels = [f"{r.get('Specialty','')} | {r.get('Status','')}" for _, r in edited_reqs.iterrows()]
