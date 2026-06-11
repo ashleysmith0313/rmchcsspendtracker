@@ -328,25 +328,26 @@ def generate_pdf_report(df, week_ending, title, prepared_by="Vista Staffing Solu
     # Provider detail
     if include_detail:
         story += [Spacer(1, 0.1*inch), Paragraph("Provider Detail", section_style)]
-        hdr_row = [["Provider","Type","Specialty","Svc Line","Days","Rate/Day","Total"]]
+        hdr_row = [["Provider","Type","Specialty","Svc Line","Hrs / Days","Rate","Total"]]
         if include_notes:
             hdr_row[0].append("Notes")
         det_rows = []
-        for _, row in df.sort_values("specialty").iterrows():
+        for _, row in df.sort_values(["specialty","provider_name"]).iterrows():
             sl = row.get("service_line","")
             if sl in HOURLY_SERVICE_LINES:
-                qty  = f"{row['hours_worked']:.1f} hrs" if pd.notna(row.get("hours_worked")) else ""
+                qty  = f"{row['hours_worked']:.2f} hrs" if pd.notna(row.get("hours_worked")) else ""
                 rate = f"${row['bill_rate']:,.2f}/hr"   if pd.notna(row.get("bill_rate"))    else ""
             else:
                 qty  = f"{row['days_worked']:.1f} days" if pd.notna(row.get("days_worked")) else ""
                 rate = f"${row['daily_rate']:,.2f}/day"  if pd.notna(row.get("daily_rate"))  else ""
-            r = [row["provider_name"], row.get("provider_type",""),
+            ot_flag = " (OT)" if row.get("is_ot") else ""
+            r = [row["provider_name"] + ot_flag, row.get("provider_type",""),
                  row["specialty"], sl, qty, rate, f"${row['total_spend']:,.2f}"]
             if include_notes:
                 r.append(str(row.get("notes","") or ""))
             det_rows.append(r)
-        cw = [1.4*inch,0.7*inch,1.1*inch,0.75*inch,0.45*inch,0.75*inch,0.8*inch,1.2*inch] if include_notes \
-             else [1.7*inch,0.8*inch,1.4*inch,0.9*inch,0.5*inch,0.85*inch,1.0*inch]
+        cw = [1.35*inch,0.6*inch,1.0*inch,0.7*inch,0.7*inch,0.85*inch,0.75*inch,1.2*inch] if include_notes \
+             else [1.8*inch,0.75*inch,1.35*inch,0.85*inch,0.7*inch,0.9*inch,0.85*inch]
         det_tbl = Table(hdr_row+det_rows, colWidths=cw)
         det_tbl.setStyle(TableStyle([
             ("BACKGROUND",(0,0),(-1,0),BLUE), ("TEXTCOLOR",(0,0),(-1,0),WHITE),
