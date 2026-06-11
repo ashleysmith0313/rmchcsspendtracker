@@ -6,6 +6,7 @@ import os
 import uuid
 import io
 from datetime import date, datetime, timedelta
+from openpyxl import load_workbook
 from reportlab.lib.pagesizes import letter
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib.units import inch
@@ -39,6 +40,7 @@ def load_data() -> pd.DataFrame:
             "specialty", "service_line", "department",
             "days_worked", "daily_rate",
             "hours_worked", "bill_rate",
+            "is_ot", "invoice_number",
             "total_spend", "notes", "logged_at"
         ])
     df = pd.DataFrame(data)
@@ -46,6 +48,11 @@ def load_data() -> pd.DataFrame:
         if col not in df.columns:
             df[col] = None
         df[col] = pd.to_numeric(df[col], errors="coerce")
+    if "is_ot" not in df.columns:
+        df["is_ot"] = False
+    if "invoice_number" not in df.columns:
+        df["invoice_number"] = ""
+    df["is_ot"] = df["is_ot"].fillna(False)
     return df
 
 def save_entry(entry: dict):
@@ -69,6 +76,134 @@ def get_week_ending() -> date:
     today = date.today()
     days_until_saturday = (5 - today.weekday()) % 7
     return today if days_until_saturday == 0 else today + timedelta(days=days_until_saturday)
+
+# ══════════════════════════════════════════════════════════════════════════════
+# INVOICE PARSER HELPERS
+# ══════════════════════════════════════════════════════════════════════════════
+_ALLIED_KW  = ["ultrasound","radiology","lab","tech","therapy","respiratory","imaging",
+               "surgical","echo","cardio","vascular","mri","ct ","nuclear","phlebotomy",
+               "x-ray","xray","mammography","ekg","eeg","sterile","supply","pharmacy"]
+_NURSING_KW = [" rn","lpn","nurse","nursing","cna","med/surg","icu","er ","ed ","l&d",
+               "labor","oncology","telemetry","pacu","or ","post op","step down","float"]
+
+def _invoice_service_line(placement: str) -> str:
+    p = placement.lower()
+    for kw in _ALLIED_KW:
+        if kw in p:
+            return "Allied Health"
+    for kw in _NURSING_KW:
+        if kw in p:
+            return "Nursing"
+    return "Allied Health"
+
+def _invoice_specialty(placement: str) -> str:
+    parts = placement.split("|")
+    if len(parts) >= 3:
+        return parts[-1].strip()
+    return placement.strip()
+
+def _invoice_provider_type(placement: str) -> str:
+    p = placement.lower()
+    if "tech" in p:       return "Tech"
+    if " rn" in p:        return "RN"
+    if "lpn" in p:        return "LPN"
+    if "cna" in p:        return "CNA"
+    if "therapist" in p:  return "Therapist"
+    if "nurse" in p:      return "RN"
+    return "Other"
+
+def parse_invoice_xlsx(file_obj) -> tuple:
+    """Parse a Vista consolidated invoice Excel file.
+    Returns (parsed_rows: list[dict], warnings: list[str], skipped: int)"""
+    wb = load_workbook(file_obj, read_only=True, data_only=True)
+    ws = wb.active
+    all_rows = list(ws.iter_rows(values_only=True))
+    if not all_rows:
+        return [], ["File appears empty."], 0
+
+    headers = [str(h).strip().lower() if h else "" for h in all_rows[0]]
+
+    # Flexible column detection
+    def col(name_options):
+        for name in name_options:
+            for i, h in enumerate(headers):
+                if name in h:
+                    return i
+        return None
+
+    idx_nurse    = col(["nurse name", "provider name", "worker"])
+    idx_we       = col(["we date", "week end", "week ending"])
+    idx_placement= col(["placement"])
+    idx_rev_cat  = col(["revenue category", "rev cat", "category"])
+    idx_qty      = col(["quantity", "qty", "hours"])
+    idx_rate     = col(["unit cost", "bill rate", "rate"])
+    idx_amount   = col(["line amount", "amount"])
+    idx_invoice  = col(["invoice number", "invoice #", "inv number"])
+
+    missing_cols = []
+    for name, idx in [("Nurse Name", idx_nurse), ("WE Date", idx_we),
+                      ("Revenue Category", idx_rev_cat), ("Quantity", idx_qty),
+                      ("Unit Cost", idx_rate), ("Line Amount", idx_amount)]:
+        if idx is None:
+            missing_cols.append(name)
+    if missing_cols:
+        return [], [f"Could not find required columns: {', '.join(missing_cols)}"], 0
+
+    parsed = []
+    skipped = 0
+    warnings = []
+
+    for row in all_rows[1:]:
+        if not any(v is not None for v in row):
+            continue
+        nurse_name  = row[idx_nurse]    if idx_nurse    is not None else None
+        we_date     = row[idx_we]       if idx_we       is not None else None
+        placement   = row[idx_placement]if idx_placement is not None else ""
+        rev_cat     = row[idx_rev_cat]  if idx_rev_cat  is not None else ""
+        quantity    = row[idx_qty]      if idx_qty      is not None else None
+        unit_cost   = row[idx_rate]     if idx_rate     is not None else None
+        line_amount = row[idx_amount]   if idx_amount   is not None else None
+        invoice_num = row[idx_invoice]  if idx_invoice  is not None else ""
+
+        # Skip summary/total rows
+        if nurse_name is None or str(nurse_name).strip() == "":
+            skipped += 1
+            continue
+        if not isinstance(we_date, datetime):
+            skipped += 1
+            continue
+
+        try:
+            qty_f    = float(quantity)   if quantity   is not None else 0.0
+            rate_f   = float(unit_cost)  if unit_cost  is not None else 0.0
+            amount_f = round(float(line_amount), 2) if line_amount is not None else round(qty_f * rate_f, 2)
+        except (TypeError, ValueError):
+            skipped += 1
+            warnings.append(f"Skipped row for {nurse_name} — could not parse numeric values.")
+            continue
+
+        placement_str = str(placement) if placement else str(nurse_name)
+        is_ot = "over time" in str(rev_cat).lower() or "overtime" in str(rev_cat).lower()
+
+        parsed.append({
+            "week_ending":    we_date.strftime("%Y-%m-%d"),
+            "provider_name":  str(nurse_name).strip(),
+            "provider_type":  _invoice_provider_type(placement_str),
+            "specialty":      _invoice_specialty(placement_str),
+            "service_line":   _invoice_service_line(placement_str),
+            "department":     "",
+            "days_worked":    None,
+            "daily_rate":     None,
+            "hours_worked":   qty_f,
+            "bill_rate":      rate_f,
+            "is_ot":          is_ot,
+            "invoice_number": str(invoice_num).strip() if invoice_num else "",
+            "total_spend":    amount_f,
+            "notes":          f"Invoice {invoice_num} | {str(rev_cat).strip()}" if invoice_num else str(rev_cat).strip(),
+            "logged_at":      datetime.now().isoformat()
+        })
+
+    return parsed, warnings, skipped
 
 # ══════════════════════════════════════════════════════════════════════════════
 # PDF GENERATOR
@@ -420,8 +555,10 @@ if page == "Dashboard":
             return pd.Series([days, rate])
     disp[["_qty","_rate"]] = disp.apply(fmt_unit, axis=1)
     disp["total_spend"] = disp["total_spend"].apply(lambda x: f"${x:,.2f}" if pd.notna(x) else "")
-    disp_final = disp[["week_ending","provider_name","specialty","service_line","_qty","_rate","total_spend","notes"]].copy()
-    disp_final.columns = ["Week Ending","Provider","Specialty","Service Line","Days / Hours","Rate","Total Spend","Notes"]
+    if "is_ot" not in disp.columns: disp["is_ot"] = False
+    disp["_ot"] = disp["is_ot"].apply(lambda x: "OT" if x else "Regular")
+    disp_final = disp[["week_ending","provider_name","specialty","service_line","_ot","_qty","_rate","total_spend","notes"]].copy()
+    disp_final.columns = ["Week Ending","Provider","Specialty","Service Line","Type","Days / Hours","Rate","Total Spend","Notes"]
     st.dataframe(disp_final, use_container_width=True, hide_index=True)
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -436,7 +573,7 @@ elif page == "Log Spend":
         </div>
     </div>""", unsafe_allow_html=True)
 
-    tab_manual, tab_bulk = st.tabs(["Single Entry", "Bulk Upload (CSV)"])
+    tab_manual, tab_bulk, tab_invoice = st.tabs(["Single Entry", "Bulk Upload (CSV)", "Upload Invoice (Excel)"])
 
     with tab_manual:
         st.markdown("<div style='height:0.75rem'></div>", unsafe_allow_html=True)
@@ -599,6 +736,122 @@ elif page == "Log Spend":
             except Exception as e:
                 st.error(f"Could not read file: {e}")
 
+    with tab_invoice:
+        st.markdown("<div style='height:0.75rem'></div>", unsafe_allow_html=True)
+        st.markdown('<div class="section-header">Upload Vista Consolidated Invoice</div>', unsafe_allow_html=True)
+        st.markdown('<div class="section-sub">Drop your Excel invoice file here. Regular and OT lines are imported as separate entries. Specialty, service line, and provider type are auto-detected from the Placement field.</div>', unsafe_allow_html=True)
+
+        inv_file = st.file_uploader("Choose Excel invoice (.xlsx)", type=["xlsx"], label_visibility="collapsed")
+
+        if inv_file:
+            with st.spinner("Parsing invoice..."):
+                try:
+                    parsed_rows, parse_warnings, skipped_count = parse_invoice_xlsx(inv_file)
+                except Exception as e:
+                    st.error(f"Could not read invoice file: {e}")
+                    parsed_rows = []
+                    parse_warnings = []
+                    skipped_count = 0
+
+            if parse_warnings:
+                for w in parse_warnings:
+                    st.warning(w)
+
+            if not parsed_rows:
+                st.error("No valid rows found in this file.")
+            else:
+                inv_df = pd.DataFrame(parsed_rows)
+
+                st.markdown(f"<div style='height:0.5rem'></div>", unsafe_allow_html=True)
+                st.markdown('<div class="section-header">Preview</div>', unsafe_allow_html=True)
+
+                # Summary KPIs
+                ki1, ki2, ki3, ki4 = st.columns(4)
+                ki1.metric("Rows Found",       len(inv_df))
+                ki2.metric("Providers",         inv_df["provider_name"].nunique())
+                ki3.metric("Weeks",             inv_df["week_ending"].nunique())
+                ki4.metric("Total Spend",       f"${inv_df['total_spend'].sum():,.2f}")
+
+                if skipped_count:
+                    st.caption(f"{skipped_count} summary/blank rows skipped automatically.")
+
+                # Preview table
+                prev_inv = inv_df.copy()
+                prev_inv["is_ot"]       = prev_inv["is_ot"].apply(lambda x: "OT" if x else "Regular")
+                prev_inv["hours_worked"]= prev_inv["hours_worked"].apply(lambda x: f"{x:.2f} hrs")
+                prev_inv["bill_rate"]   = prev_inv["bill_rate"].apply(lambda x: f"${x:,.2f}/hr")
+                prev_inv["total_spend"] = prev_inv["total_spend"].apply(lambda x: f"${x:,.2f}")
+                st.dataframe(
+                    prev_inv[["week_ending","provider_name","provider_type","specialty",
+                               "service_line","is_ot","hours_worked","bill_rate","total_spend","invoice_number"]].rename(
+                        columns={"week_ending":"Week Ending","provider_name":"Provider",
+                                 "provider_type":"Type","specialty":"Specialty",
+                                 "service_line":"Service Line","is_ot":"Rate Type",
+                                 "hours_worked":"Hours","bill_rate":"Bill Rate",
+                                 "total_spend":"Total Spend","invoice_number":"Invoice #"}),
+                    use_container_width=True, hide_index=True
+                )
+
+                st.markdown("<div style='height:0.5rem'></div>", unsafe_allow_html=True)
+                st.markdown("**Review auto-detected fields below. Edit anything before saving.**")
+
+                # Editable corrections
+                with st.expander("Edit specialty / service line / provider type before saving", expanded=False):
+                    st.caption("These are auto-detected from the invoice Placement field. Correct any that are wrong.")
+                    providers_to_edit = inv_df["provider_name"].unique().tolist()
+                    corrections = {}
+                    for pname in providers_to_edit:
+                        prows = inv_df[inv_df["provider_name"] == pname].iloc[0]
+                        st.markdown(f"**{pname}**")
+                        ec1, ec2, ec3 = st.columns(3)
+                        corrections[pname] = {
+                            "provider_type": ec1.text_input(
+                                "Provider Type", value=prows["provider_type"],
+                                key=f"pt_{pname}"),
+                            "specialty": ec2.text_input(
+                                "Specialty", value=prows["specialty"],
+                                key=f"sp_{pname}"),
+                            "service_line": ec3.selectbox(
+                                "Service Line",
+                                ["Allied Health","Nursing","Physician","APP","Other"],
+                                index=["Allied Health","Nursing","Physician","APP","Other"].index(
+                                    prows["service_line"]) if prows["service_line"] in
+                                    ["Allied Health","Nursing","Physician","APP","Other"] else 0,
+                                key=f"sl_{pname}"),
+                            "department": ec1.text_input(
+                                "Department", value="",
+                                key=f"dept_{pname}")
+                        }
+
+                st.markdown("<div style='height:0.4rem'></div>", unsafe_allow_html=True)
+                ci1, _ = st.columns([1,4])
+                with ci1:
+                    if st.button("Save All Invoice Entries", type="primary", use_container_width=True):
+                        saved = 0
+                        for _, row in inv_df.iterrows():
+                            pname = row["provider_name"]
+                            cor   = corrections.get(pname, {})
+                            save_entry({
+                                "week_ending":    row["week_ending"],
+                                "provider_name":  pname,
+                                "provider_type":  cor.get("provider_type", row["provider_type"]),
+                                "specialty":      cor.get("specialty",     row["specialty"]),
+                                "service_line":   cor.get("service_line",  row["service_line"]),
+                                "department":     cor.get("department",    ""),
+                                "days_worked":    None,
+                                "daily_rate":     None,
+                                "hours_worked":   row["hours_worked"],
+                                "bill_rate":      row["bill_rate"],
+                                "is_ot":          bool(row["is_ot"]),
+                                "invoice_number": row["invoice_number"],
+                                "total_spend":    row["total_spend"],
+                                "notes":          row["notes"],
+                                "logged_at":      datetime.now().isoformat()
+                            })
+                            saved += 1
+                        st.success(f"{saved} entries saved from invoice. Total: ${inv_df['total_spend'].sum():,.2f}")
+                        st.rerun()
+
 # ══════════════════════════════════════════════════════════════════════════════
 # MANAGE ENTRIES
 # ══════════════════════════════════════════════════════════════════════════════
@@ -640,6 +893,9 @@ elif page == "Manage Entries":
                 c2.write(f"**Daily Rate:** {rate}")
             c3.write(f"**Total Spend:** ${row['total_spend']:,.2f}")
             if row.get("notes"): st.write(f"**Notes:** {row['notes']}")
+            if row.get("invoice_number"): st.write(f"**Invoice #:** {row['invoice_number']}")
+            ot_label = " 🔶 OT" if row.get("is_ot") else ""
+            if ot_label: st.caption(f"Overtime entry{ot_label}")
             if st.button("Delete Entry", key=f"del_{row['id']}", type="secondary"):
                 delete_entry(row["id"])
                 st.success("Entry deleted.")
