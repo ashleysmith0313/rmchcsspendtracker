@@ -215,7 +215,7 @@ LIGHT     = colors.HexColor("#f1f5f9")
 WHITE     = colors.white
 BORDER    = colors.HexColor("#e2e8f0")
 
-def generate_pdf_report(df, week_ending, title, prepared_by="Vista Staffing Solutions",
+def generate_pdf_report(df, week_ending, title, prepared_by="Ingenovis ITO",
                          include_detail=True, include_notes=True) -> bytes:
     buf = io.BytesIO()
     doc = SimpleDocTemplate(buf, pagesize=letter,
@@ -422,7 +422,7 @@ def generate_pdf_report(df, week_ending, title, prepared_by="Vista Staffing Solu
     return buf.getvalue()
 
 
-def generate_cumulative_report(df, date_from, date_to, title, prepared_by="Vista Staffing Solutions",
+def generate_cumulative_report(df, date_from, date_to, title, prepared_by="Ingenovis ITO",
                                 include_detail=True, include_notes=True) -> bytes:
     """Generate a cumulative spend report across all weeks in the date range."""
     buf = io.BytesIO()
@@ -762,7 +762,7 @@ with st.sidebar:
         st.markdown(f"Entries: **{len(df)}**")
         st.markdown(f"Weeks Tracked: **{df['week_ending'].nunique()}**")
     st.markdown("---")
-    st.markdown("<small style='color:#475569'>Vista Staffing Solutions<br>Internal Use Only</small>", unsafe_allow_html=True)
+    st.markdown("<small style='color:#475569'>Ingenovis ITO<br>Internal Use Only</small>", unsafe_allow_html=True)
 
 # ══════════════════════════════════════════════════════════════════════════════
 # DASHBOARD
@@ -774,7 +774,7 @@ if page == "Dashboard":
             <div class="page-header-title">RMCHCS Spend Dashboard</div>
             <div class="page-header-sub">Rehoboth McKinley Christian Health Care Services · Gallup, NM</div>
         </div>
-        <div class="page-header-badge">Vista Staffing Solutions</div>
+        <div class="page-header-badge">Ingenovis ITO</div>
     </div>""", unsafe_allow_html=True)
 
     if df.empty:
@@ -1269,7 +1269,7 @@ elif page == "Generate Report":
         with c2:
             include_detail = st.checkbox("Include Provider Detail Table", value=True)
             include_notes  = st.checkbox("Include Notes Column", value=True)
-            prepared_by    = st.text_input("Prepared By", value="Vista Staffing Solutions")
+            prepared_by    = st.text_input("Prepared By", value="Ingenovis ITO")
 
         st.markdown("---")
         week_data = df[df["week_ending"]==report_week]
@@ -1325,7 +1325,7 @@ elif page == "Generate Report":
             cum_detail  = st.checkbox("Include Entry Detail Table", value=False,
                                        help="Shows every individual entry — can get long for multi-week reports")
             cum_notes   = st.checkbox("Include Notes Column", value=True, key="cum_notes")
-            cum_prep_by = st.text_input("Prepared By", value="Vista Staffing Solutions", key="cum_prep")
+            cum_prep_by = st.text_input("Prepared By", value="Ingenovis ITO", key="cum_prep")
 
         st.markdown("---")
         cum_data = df[(df["week_ending"] >= date_from) & (df["week_ending"] <= date_to)]
