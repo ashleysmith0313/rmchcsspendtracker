@@ -841,7 +841,7 @@ if page == "Dashboard":
             line=dict(color="#3b82f6", width=2.5), marker=dict(size=7, color="#3b82f6"),
             hoverinfo="skip"
         ))
-        y_max = weekly["total_spend"].max() * 1.35 if not weekly.empty else 1000
+        y_max = weekly["total_spend"].max() * 2.0 if not weekly.empty else 1000
         fig.update_layout(
             plot_bgcolor="white", paper_bgcolor="white",
             margin=dict(l=0,r=0,t=10,b=0), height=280,
