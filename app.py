@@ -77,6 +77,232 @@ def get_week_ending() -> date:
     days_until_saturday = (5 - today.weekday()) % 7
     return today if days_until_saturday == 0 else today + timedelta(days=days_until_saturday)
 
+# ── Requisition & Candidate data store ───────────────────────────────────────
+REQ_FILE       = os.path.join(BASE_DIR, "reqs_log.json")
+CANDIDATE_FILE = os.path.join(BASE_DIR, "candidates_log.json")
+
+def _ensure(path):
+    if not os.path.exists(path):
+        with open(path, "w") as f: json.dump([], f)
+
+def _load(path) -> list:
+    _ensure(path)
+    with open(path, "r") as f: return json.load(f)
+
+def _save_record(path, record):
+    _ensure(path)
+    data = _load(path)
+    record["id"] = str(uuid.uuid4())
+    record["created_at"] = datetime.now().isoformat()
+    data.append(record)
+    with open(path, "w") as f: json.dump(data, f, indent=2)
+    return record["id"]
+
+def _update_record(path, record_id, updates):
+    _ensure(path)
+    data = _load(path)
+    for r in data:
+        if r.get("id") == record_id:
+            r.update(updates)
+            r["updated_at"] = datetime.now().isoformat()
+    with open(path, "w") as f: json.dump(data, f, indent=2)
+
+def _delete_record(path, record_id):
+    _ensure(path)
+    data = [r for r in _load(path) if r.get("id") != record_id]
+    with open(path, "w") as f: json.dump(data, f, indent=2)
+
+def load_reqs() -> pd.DataFrame:
+    data = _load(REQ_FILE)
+    if not data:
+        return pd.DataFrame(columns=["id","specialty","job_title","discipline","shift","req_type",
+                                      "bill_rate","slots_open","req_open_date","status","notes","created_at"])
+    return pd.DataFrame(data)
+
+def load_candidates() -> pd.DataFrame:
+    data = _load(CANDIDATE_FILE)
+    if not data:
+        return pd.DataFrame(columns=["id","req_id","candidate_name","source_company","discipline",
+                                      "specialty","date_sent","date_clinical_call","date_offered",
+                                      "date_accepted","start_date","status","rmchcs_notes",
+                                      "cred_company","cred_due_date","cred_status","cred_nm_fingerprint",
+                                      "cred_notes","notes","created_at"])
+    return pd.DataFrame(data)
+
+# Status option lists
+REQ_STATUSES  = ["Open","On Hold","Max Submissions","Filled","Closed"]
+CAND_STATUSES = ["Submitted","Clinical Call Scheduled","Clinical Call Complete",
+                  "Offered","Accepted","Declined by Candidate","Declined by Client",
+                  "Placed","Cancelled"]
+CRED_STATUSES = ["Pending","Clear","Cancelled","Hold"]
+SOURCE_COS    = ["Vista","Springboard","Trustaff","Other IGV Brand","External"]
+DISCIPLINES   = ["Nursing","Allied Health","Physician","APP","Locums"]
+REQ_TYPES     = ["Backfill","Open Req"]
+
+# ══════════════════════════════════════════════════════════════════════════════
+# PIPELINE EXCEL IMPORT HELPERS
+# ══════════════════════════════════════════════════════════════════════════════
+def _fmt_date(val):
+    if val is None: return ""
+    if isinstance(val, datetime): return val.strftime("%Y-%m-%d")
+    s = str(val).strip()
+    return "" if s in ("TBD","ASAP","nan","None","") else s
+
+def _map_cand_status(raw):
+    if not raw: return "Submitted"
+    r = str(raw).lower().strip()
+    if any(x in r for x in ["offered - signed","offered - sign","signed"]): return "Placed"
+    if "offered" in r and "pending" in r: return "Offered"
+    if "offered" in r: return "Offered"
+    if "hired" in r: return "Accepted"
+    if "interviewed" in r: return "Clinical Call Complete"
+    if "pending clinical call" in r or "clinical call" in r: return "Clinical Call Scheduled"
+    if "completed clinical" in r: return "Clinical Call Complete"
+    if "accepted another offer" in r or "declined - rto" in r: return "Declined by Candidate"
+    if "did not call" in r or "would not recommend" in r or "no total hips" in r or ", pass" in r: return "Declined by Client"
+    if "cancel" in r: return "Cancelled"
+    if "sent to mgr" in r: return "Submitted"
+    return "Submitted"
+
+def _map_req_status(raw):
+    if not raw: return "Open"
+    r = str(raw).lower().strip()
+    if "closed" in r: return "Closed"
+    if "filled" in r: return "Filled"
+    if "max sub" in r: return "Max Submissions"
+    if "hold" in r: return "On Hold"
+    if "pending approval" in r: return "On Hold"
+    if "open" in r: return "Open"
+    return "Open"
+
+def _map_cred_status(raw):
+    if not raw: return ""
+    r = str(raw).lower()
+    if "cancel" in r: return "Cancelled"
+    if "clear" in r: return "Clear"
+    if "hold" in r: return "Hold"
+    return "Pending"
+
+def _infer_discipline(specialty):
+    if not specialty: return "Nursing"
+    s = specialty.lower()
+    if any(x in s for x in ["surgery","ortho","surgeon","physician","locum","medicine","md "]): return "Physician"
+    if any(x in s for x in ["tech","rad","nuc","rrt","crt","cst","surg tech","ultrasound","respiratory","echo","phlebotomy"]): return "Allied Health"
+    return "Nursing"
+
+def _clean_name(name):
+    return str(name).replace("*SB","").replace("*sb","").strip() if name else ""
+
+def _infer_source(name):
+    return "Springboard" if name and "*sb" in str(name).lower() else "Vista"
+
+def parse_pipeline_excel(file_obj) -> dict:
+    """Parse the RMCHCS candidates/jobs Excel. Returns {reqs, candidates, warnings}."""
+    wb = load_workbook(file_obj, read_only=True, data_only=True)
+    reqs, candidates, warnings = [], [], []
+
+    # ── Requisitions ──────────────────────────────────────────────────────
+    if "Open Needs and Backfill Needs" in wb.sheetnames:
+        ws = wb["Open Needs and Backfill Needs"]
+        rows = list(ws.iter_rows(values_only=True))
+        for row in rows[1:]:
+            if not any(v is not None for v in row): continue
+            # Left table: Allied/Nursing (cols 0-7)
+            if row[0] and str(row[0]).strip() not in ("","Specialty"):
+                disc_raw = str(row[0]).strip()
+                disc = "Allied Health" if disc_raw.lower()=="allied" else "Nursing" if disc_raw.lower()=="nursing" else disc_raw
+                try: br = float(str(row[2]).replace("$","").replace("/hr","").strip()) if row[2] else 0
+                except: br = 0
+                req_type = "Backfill" if "backfill" in str(row[6] or "").lower() else "Open Req"
+                slots = 1
+                try: slots = int(row[5]) if row[5] is not None else 1
+                except: pass
+                reqs.append({
+                    "specialty": str(row[1]).strip() if row[1] else "",
+                    "job_title": str(row[1]).strip() if row[1] else "",
+                    "discipline": disc, "shift": str(row[3]).strip() if row[3] else "",
+                    "req_type": req_type, "bill_rate": br, "slots_open": slots,
+                    "req_open_date": "", "status": _map_req_status(row[4]),
+                    "notes": str(row[7]).strip() if row[7] else ""
+                })
+            # Right table: Locums (cols 9-14)
+            if row[9] and str(row[9]).strip() not in ("","Specialty"):
+                try: br = float(str(row[11]).replace("$","").replace("/hr","").strip()) if row[11] else 0
+                except: br = 0
+                reqs.append({
+                    "specialty": str(row[10]).strip() if row[10] else "",
+                    "job_title": str(row[10]).strip() if row[10] else "",
+                    "discipline": "Physician", "shift": "",
+                    "req_type": "Open Req", "bill_rate": br, "slots_open": 1,
+                    "req_open_date": "", "status": _map_req_status(row[13]),
+                    "notes": str(row[14]).strip() if row[14] else ""
+                })
+    else:
+        warnings.append("Sheet 'Open Needs and Backfill Needs' not found — reqs skipped.")
+
+    # ── Credentialing lookup ──────────────────────────────────────────────
+    cred_lookup = {}
+    if "Credentialing" in wb.sheetnames:
+        ws_c = wb["Credentialing"]
+        for row in list(ws_c.iter_rows(values_only=True))[1:]:
+            if not row[3]: continue
+            raw_name = str(row[3]).strip()
+            base = raw_name.replace("- CANCEL","").replace("(Ext flip)","").replace("- pending","").replace("- Cancel","").strip().lower()
+            cred_lookup[base] = {
+                "cred_company":        str(row[0]).strip() if row[0] else "",
+                "cred_due_date":       _fmt_date(row[2]),
+                "cred_status":         _map_cred_status(str(row[5]) if row[5] else ""),
+                "cred_nm_fingerprint": bool(row[7]) if row[7] else False,
+                "cred_notes":          str(row[5]).strip() if row[5] else ""
+            }
+
+    # ── Candidates ────────────────────────────────────────────────────────
+    def _parse_cand_sheet(ws, disc_override=None):
+        rows = list(ws.iter_rows(values_only=True))
+        for row in rows[1:]:
+            if not row[0]: continue
+            raw_name = str(row[0]).strip()
+            if raw_name.lower() in ("candidate","name",""): continue
+            name    = _clean_name(raw_name)
+            source  = _infer_source(raw_name)
+            spec    = str(row[1]).strip() if row[1] else ""
+            disc    = disc_override or _infer_discipline(spec)
+            d_sent  = _fmt_date(row[2])
+            if disc_override == "Physician":
+                notes_raw = ""
+                rmchcs    = str(row[3]).strip() if len(row) > 3 and row[3] else ""
+                start_date= ""
+            else:
+                notes_raw = str(row[4]).strip() if len(row) > 4 and row[4] else ""
+                rmchcs    = str(row[5]).strip() if len(row) > 5 and row[5] else ""
+                start_date= _fmt_date(row[3]) if len(row) > 3 and row[3] else ""
+            status = _map_cand_status(notes_raw or rmchcs)
+            cred   = cred_lookup.get(name.lower(), {})
+            candidates.append({
+                "req_id": None,
+                "candidate_name": name, "source_company": source,
+                "discipline": disc, "specialty": spec, "status": status,
+                "date_sent": d_sent, "date_clinical_call": "",
+                "date_offered": "", "date_accepted": "", "start_date": start_date,
+                "notes": notes_raw, "rmchcs_notes": rmchcs,
+                "cred_company":        cred.get("cred_company",""),
+                "cred_due_date":       cred.get("cred_due_date",""),
+                "cred_status":         cred.get("cred_status",""),
+                "cred_nm_fingerprint": cred.get("cred_nm_fingerprint",False),
+                "cred_notes":          cred.get("cred_notes","")
+            })
+
+    if "Travel Nurse and Allied" in wb.sheetnames:
+        _parse_cand_sheet(wb["Travel Nurse and Allied"])
+    else:
+        warnings.append("Sheet 'Travel Nurse and Allied' not found.")
+    if "Physicians - Locums" in wb.sheetnames:
+        _parse_cand_sheet(wb["Physicians - Locums"], disc_override="Physician")
+    else:
+        warnings.append("Sheet 'Physicians - Locums' not found.")
+
+    return {"reqs": reqs, "candidates": candidates, "warnings": warnings}
+
 # ══════════════════════════════════════════════════════════════════════════════
 # INVOICE PARSER HELPERS
 # ══════════════════════════════════════════════════════════════════════════════
@@ -750,24 +976,39 @@ st.markdown("""
 # ══════════════════════════════════════════════════════════════════════════════
 df = load_data()
 
+df_reqs  = load_reqs()
+df_cands = load_candidates()
+
 with st.sidebar:
     st.markdown("### 🏥 RMCHCS")
-    st.markdown("**Spend Intelligence**")
+    st.markdown("**ITO Program Manager**")
     st.markdown("---")
-    page = st.radio("Navigate", ["Dashboard", "Log Spend", "Manage Entries", "Generate Report"], index=0)
+    st.markdown("**💰 Spend Tracker**")
+    page = st.radio("Navigate", [
+        "Spend Dashboard", "Log Spend", "Manage Entries", "Generate Report",
+        "─────────────",
+        "Pipeline Dashboard", "Requisitions", "Candidates", "Credentialing"
+    ], index=0)
     st.markdown("---")
     if not df.empty:
-        st.markdown("**Quick Stats**")
-        st.markdown(f"Total Tracked: **${df['total_spend'].sum():,.0f}**")
-        st.markdown(f"Entries: **{len(df)}**")
-        st.markdown(f"Weeks Tracked: **{df['week_ending'].nunique()}**")
+        st.markdown("**Spend**")
+        st.markdown(f"Total: **${df['total_spend'].sum():,.0f}**")
+        st.markdown(f"Weeks: **{df['week_ending'].nunique()}**")
+    if not df_reqs.empty:
+        open_reqs = df_reqs[df_reqs["status"]=="Open"] if "status" in df_reqs.columns else pd.DataFrame()
+        st.markdown("**Pipeline**")
+        st.markdown(f"Open Reqs: **{len(open_reqs)}**")
+        if not df_cands.empty:
+            active = df_cands[df_cands["status"].isin(["Submitted","Clinical Call Scheduled",
+                              "Clinical Call Complete","Offered","Accepted"])] if "status" in df_cands.columns else pd.DataFrame()
+            st.markdown(f"Active Candidates: **{len(active)}**")
     st.markdown("---")
     st.markdown("<small style='color:#475569'>Ingenovis ITO<br>Internal Use Only</small>", unsafe_allow_html=True)
 
 # ══════════════════════════════════════════════════════════════════════════════
 # DASHBOARD
 # ══════════════════════════════════════════════════════════════════════════════
-if page == "Dashboard":
+if page == "Spend Dashboard":
     st.markdown("""
     <div class="page-header">
         <div>
@@ -1384,3 +1625,530 @@ elif page == "Generate Report":
                                        f"RMCHCS_TotalSpend_{date_from}_to_{date_to}.pdf",
                                        "application/pdf", type="primary")
                     st.success("Report ready. Click above to download.")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# PIPELINE DASHBOARD
+# ══════════════════════════════════════════════════════════════════════════════
+elif page == "Pipeline Dashboard":
+    st.markdown("""
+    <div class="page-header">
+        <div>
+            <div class="page-header-title">Pipeline Dashboard</div>
+            <div class="page-header-sub">Requisitions, candidates, and credentialing at a glance</div>
+        </div>
+        <div class="page-header-badge">Ingenovis ITO</div>
+    </div>""", unsafe_allow_html=True)
+
+    if df_reqs.empty and df_cands.empty:
+        st.info("No pipeline data yet. Start by adding requisitions and candidates.")
+        st.stop()
+
+    # KPI row
+    total_reqs   = len(df_reqs)
+    open_reqs    = len(df_reqs[df_reqs["status"]=="Open"]) if not df_reqs.empty else 0
+    total_cands  = len(df_cands)
+    placed       = len(df_cands[df_cands["status"]=="Placed"]) if not df_cands.empty else 0
+    active_pipe  = len(df_cands[df_cands["status"].isin(["Submitted","Clinical Call Scheduled",
+                       "Clinical Call Complete","Offered","Accepted"])]) if not df_cands.empty else 0
+    cred_due     = 0
+    if not df_cands.empty and "cred_due_date" in df_cands.columns:
+        today_str = date.today().isoformat()
+        cred_due = len(df_cands[
+            (df_cands["cred_due_date"].notna()) &
+            (df_cands["cred_due_date"] != "") &
+            (df_cands["cred_due_date"] <= today_str) &
+            (~df_cands["cred_status"].isin(["Clear","Cancelled"]))
+        ]) if "cred_status" in df_cands.columns else 0
+
+    k1,k2,k3,k4 = st.columns(4)
+    with k1:
+        st.markdown(f'<div class="kpi-card"><div class="kpi-label">Open Requisitions</div><div class="kpi-value">{open_reqs}</div><div class="kpi-delta-neutral">{total_reqs} total reqs</div></div>', unsafe_allow_html=True)
+    with k2:
+        st.markdown(f'<div class="kpi-card"><div class="kpi-label">Active Pipeline</div><div class="kpi-value">{active_pipe}</div><div class="kpi-delta-neutral">candidates in process</div></div>', unsafe_allow_html=True)
+    with k3:
+        st.markdown(f'<div class="kpi-card"><div class="kpi-label">Placed</div><div class="kpi-value">{placed}</div><div class="kpi-delta-neutral">of {total_cands} submitted</div></div>', unsafe_allow_html=True)
+    with k4:
+        dcls = "kpi-delta-up" if cred_due == 0 else "kpi-delta-neutral"
+        st.markdown(f'<div class="kpi-card"><div class="kpi-label">Cred Due / Overdue</div><div class="kpi-value">{cred_due}</div><div class="{dcls}">{"All clear" if cred_due==0 else "needs attention"}</div></div>', unsafe_allow_html=True)
+
+    st.markdown("<div style='margin-top:1.5rem'></div>", unsafe_allow_html=True)
+
+    col_l, col_r = st.columns(2)
+
+    with col_l:
+        st.markdown('<div class="section-header">Requisitions by Status</div>', unsafe_allow_html=True)
+        if not df_reqs.empty:
+            req_status = df_reqs.groupby("status").size().reset_index(name="count")
+            fig_rs = go.Figure(go.Bar(
+                x=req_status["status"], y=req_status["count"],
+                marker_color=["#1a3a5c" if s=="Open" else "#3b82f6" if s=="On Hold"
+                              else "#60a5fa" if s=="Max Submissions" else "#10b981" if s=="Filled"
+                              else "#94a3b8" for s in req_status["status"]],
+                marker_line_width=0,
+                hovertemplate="<b>%{x}</b><br>%{y} reqs<extra></extra>"
+            ))
+            fig_rs.update_layout(plot_bgcolor="white", paper_bgcolor="white",
+                                  margin=dict(l=0,r=0,t=10,b=0), height=220,
+                                  xaxis=dict(showgrid=False, tickfont=dict(size=11)),
+                                  yaxis=dict(showgrid=True, gridcolor="#f1f5f9", tickfont=dict(size=11), dtick=1))
+            st.plotly_chart(fig_rs, use_container_width=True)
+        else:
+            st.info("No requisitions logged yet.")
+
+    with col_r:
+        st.markdown('<div class="section-header">Candidates by Status</div>', unsafe_allow_html=True)
+        if not df_cands.empty:
+            cand_status = df_cands.groupby("status").size().reset_index(name="count")
+            fig_cs = go.Figure(go.Bar(
+                x=cand_status["status"], y=cand_status["count"],
+                marker_color="#2d5a8e", marker_line_width=0,
+                hovertemplate="<b>%{x}</b><br>%{y} candidates<extra></extra>"
+            ))
+            fig_cs.update_layout(plot_bgcolor="white", paper_bgcolor="white",
+                                  margin=dict(l=0,r=0,t=10,b=0), height=220,
+                                  xaxis=dict(showgrid=False, tickfont=dict(size=10), tickangle=-20),
+                                  yaxis=dict(showgrid=True, gridcolor="#f1f5f9", tickfont=dict(size=11), dtick=1))
+            st.plotly_chart(fig_cs, use_container_width=True)
+        else:
+            st.info("No candidates logged yet.")
+
+    # Open reqs table
+    if not df_reqs.empty:
+        st.markdown('<div class="section-header" style="margin-top:0.5rem">Open Requisitions</div>', unsafe_allow_html=True)
+        open_df = df_reqs[df_reqs["status"]=="Open"].copy() if "status" in df_reqs.columns else df_reqs.copy()
+        if open_df.empty:
+            st.info("No open requisitions.")
+        else:
+            disp_cols = [c for c in ["specialty","job_title","discipline","shift","req_type","bill_rate","slots_open","req_open_date","notes"] if c in open_df.columns]
+            st.dataframe(open_df[disp_cols].rename(columns={
+                "specialty":"Specialty","job_title":"Job Title","discipline":"Discipline",
+                "shift":"Shift","req_type":"Type","bill_rate":"Bill Rate",
+                "slots_open":"Slots","req_open_date":"Req Opened","notes":"Notes"
+            }), use_container_width=True, hide_index=True)
+
+    # Active candidates table
+    if not df_cands.empty:
+        st.markdown('<div class="section-header" style="margin-top:1rem">Active Candidates</div>', unsafe_allow_html=True)
+        active_df = df_cands[df_cands["status"].isin(["Submitted","Clinical Call Scheduled",
+                             "Clinical Call Complete","Offered","Accepted"])].copy()
+        if active_df.empty:
+            st.info("No candidates currently in pipeline.")
+        else:
+            # Calculate days in pipeline
+            active_df["days_in_pipe"] = active_df["date_sent"].apply(
+                lambda x: (date.today() - date.fromisoformat(str(x))).days if x and str(x) != "nan" else ""
+            )
+            disp_c = [c for c in ["candidate_name","source_company","specialty","status",
+                                   "date_sent","date_offered","start_date","days_in_pipe","rmchcs_notes"] if c in active_df.columns]
+            st.dataframe(active_df[disp_c].rename(columns={
+                "candidate_name":"Candidate","source_company":"Source","specialty":"Specialty",
+                "status":"Status","date_sent":"Sent","date_offered":"Offered",
+                "start_date":"Start","days_in_pipe":"Days in Pipe","rmchcs_notes":"RMCHCS Notes"
+            }), use_container_width=True, hide_index=True)
+
+    # Turnaround stats
+    if not df_cands.empty and "date_sent" in df_cands.columns and "date_accepted" in df_cands.columns:
+        accepted = df_cands[df_cands["date_accepted"].notna() & (df_cands["date_accepted"] != "")].copy()
+        if not accepted.empty:
+            st.markdown('<div class="section-header" style="margin-top:1rem">Turnaround Times</div>', unsafe_allow_html=True)
+            def days_between(a, b):
+                try: return (date.fromisoformat(str(b)) - date.fromisoformat(str(a))).days
+                except: return None
+            accepted["submit_to_accept"] = accepted.apply(lambda r: days_between(r["date_sent"], r["date_accepted"]), axis=1)
+            avg_tat = accepted["submit_to_accept"].dropna().mean()
+            t1,t2 = st.columns(2)
+            t1.metric("Avg Submission to Acceptance", f"{avg_tat:.0f} days" if not pd.isna(avg_tat) else "N/A")
+            t2.metric("Total Accepted", len(accepted))
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# REQUISITIONS
+# ══════════════════════════════════════════════════════════════════════════════
+elif page == "Requisitions":
+    st.markdown("""
+    <div class="page-header">
+        <div>
+            <div class="page-header-title">Requisitions</div>
+            <div class="page-header-sub">Open needs and backfill positions</div>
+        </div>
+    </div>""", unsafe_allow_html=True)
+
+    tab_view, tab_add, tab_import = st.tabs(["All Requisitions", "Add Requisition", "Import from Excel"])
+
+    with tab_add:
+        st.markdown("<div style='height:0.75rem'></div>", unsafe_allow_html=True)
+        c1,c2 = st.columns(2)
+        with c1:
+            r_specialty   = st.text_input("Specialty", placeholder="e.g. ER RN, Ortho Surgery, Surg Tech")
+            r_job_title   = st.text_input("Job Title", placeholder="e.g. OR RN, Nuclear Med Tech")
+            r_discipline  = st.selectbox("Discipline", DISCIPLINES)
+            r_shift       = st.text_input("Shift", placeholder="e.g. 12H Nights, 8H Days")
+        with c2:
+            r_req_type    = st.selectbox("Type", REQ_TYPES)
+            r_bill_rate   = st.number_input("Bill Rate ($/hr)", min_value=0.0, value=83.0, step=1.0)
+            r_slots       = st.number_input("Slots Open", min_value=1, value=1, step=1)
+            r_open_date   = st.date_input("Req Open Date", value=date.today())
+        r_status  = st.selectbox("Status", REQ_STATUSES)
+        r_notes   = st.text_area("Notes", placeholder="Client contact, context, hold reason...", height=80)
+        rb1, _ = st.columns([1,4])
+        with rb1:
+            if st.button("Save Requisition", type="primary", use_container_width=True):
+                if not r_specialty.strip():
+                    st.error("Specialty is required.")
+                else:
+                    _save_record(REQ_FILE, {
+                        "specialty": r_specialty.strip(), "job_title": r_job_title.strip(),
+                        "discipline": r_discipline, "shift": r_shift.strip(),
+                        "req_type": r_req_type, "bill_rate": r_bill_rate,
+                        "slots_open": r_slots, "req_open_date": str(r_open_date),
+                        "status": r_status, "notes": r_notes.strip()
+                    })
+                    st.success(f"Requisition saved: {r_specialty} | {r_req_type} | {r_status}")
+                    st.rerun()
+
+    with tab_view:
+        st.markdown("<div style='height:0.75rem'></div>", unsafe_allow_html=True)
+        if df_reqs.empty:
+            st.info("No requisitions yet. Use the Add Requisition tab.")
+        else:
+            # Filters
+            fc1,fc2,fc3 = st.columns(3)
+            filt_status = fc1.selectbox("Status", ["All"] + REQ_STATUSES, key="req_filt_status")
+            filt_disc   = fc2.selectbox("Discipline", ["All"] + DISCIPLINES, key="req_filt_disc")
+            filt_type   = fc3.selectbox("Type", ["All"] + REQ_TYPES, key="req_filt_type")
+
+            view_reqs = df_reqs.copy()
+            if filt_status != "All": view_reqs = view_reqs[view_reqs["status"]==filt_status]
+            if filt_disc   != "All": view_reqs = view_reqs[view_reqs["discipline"]==filt_disc]
+            if filt_type   != "All": view_reqs = view_reqs[view_reqs["req_type"]==filt_type]
+
+            st.markdown(f"**{len(view_reqs)} requisitions** in current view")
+
+            for _, req in view_reqs.sort_values("req_open_date", ascending=False).iterrows():
+                status_color = {"Open":"🟢","On Hold":"🟡","Max Submissions":"🟠",
+                                "Filled":"🔵","Closed":"⚫"}.get(req.get("status",""), "⚪")
+                with st.expander(f"{status_color} {req.get('specialty','')} | {req.get('job_title','')} | {req.get('req_type','')} | {req.get('status','')}"):
+                    ec1,ec2,ec3 = st.columns(3)
+                    ec1.write(f"**Discipline:** {req.get('discipline','')}")
+                    ec2.write(f"**Shift:** {req.get('shift','')}")
+                    ec3.write(f"**Bill Rate:** ${req.get('bill_rate',0):,.2f}/hr")
+                    ec1.write(f"**Slots Open:** {req.get('slots_open','')}")
+                    ec2.write(f"**Req Opened:** {req.get('req_open_date','')}")
+                    ec3.write(f"**Type:** {req.get('req_type','')}")
+                    if req.get("notes"): st.write(f"**Notes:** {req.get('notes','')}")
+
+                    # Candidates against this req
+                    if not df_cands.empty and "req_id" in df_cands.columns:
+                        req_cands = df_cands[df_cands["req_id"]==req["id"]]
+                        if not req_cands.empty:
+                            st.markdown(f"**{len(req_cands)} candidate(s) submitted:**")
+                            for _, rc in req_cands.iterrows():
+                                src = f" [{rc.get('source_company','')}]" if rc.get('source_company') else ""
+                                st.markdown(f"- {rc.get('candidate_name','')}{src} — {rc.get('status','')} | Sent: {rc.get('date_sent','')}")
+
+                    # Status update
+                    new_status = st.selectbox("Update Status", REQ_STATUSES,
+                                              index=REQ_STATUSES.index(req["status"]) if req.get("status") in REQ_STATUSES else 0,
+                                              key=f"rs_{req['id']}")
+                    ub1,ub2 = st.columns([1,1])
+                    with ub1:
+                        if st.button("Update Status", key=f"ru_{req['id']}", type="secondary"):
+                            _update_record(REQ_FILE, req["id"], {"status": new_status})
+                            st.success("Status updated.")
+                            st.rerun()
+                    with ub2:
+                        if st.button("Delete Req", key=f"rd_{req['id']}", type="secondary"):
+                            _delete_record(REQ_FILE, req["id"])
+                            st.success("Deleted.")
+                            st.rerun()
+
+
+    with tab_import:
+        st.markdown("<div style='height:0.75rem'></div>", unsafe_allow_html=True)
+        st.markdown('<div class="section-header">Import from Excel</div>', unsafe_allow_html=True)
+        st.markdown('<div class="section-sub">Upload your RMCHCS candidates and jobs Excel file. Reqs, candidates, and credentialing are all imported in one shot.</div>', unsafe_allow_html=True)
+
+        imp_file = st.file_uploader("Choose Excel file (.xlsx)", type=["xlsx"], label_visibility="collapsed", key="pipeline_import")
+
+        if imp_file:
+            with st.spinner("Parsing file..."):
+                try:
+                    result = parse_pipeline_excel(imp_file)
+                    imp_reqs   = result["reqs"]
+                    imp_cands  = result["candidates"]
+                    imp_warns  = result["warnings"]
+                except Exception as e:
+                    st.error(f"Could not parse file: {e}")
+                    imp_reqs, imp_cands, imp_warns = [], [], []
+
+            for w in imp_warns:
+                st.warning(w)
+
+            if not imp_reqs and not imp_cands:
+                st.error("Nothing found to import.")
+            else:
+                ik1,ik2,ik3 = st.columns(3)
+                ik1.metric("Requisitions Found",  len(imp_reqs))
+                ik2.metric("Candidates Found",    len(imp_cands))
+                ik3.metric("With Cred Records",   len([c for c in imp_cands if c.get("cred_company")]))
+
+                st.markdown("<div style='height:0.5rem'></div>", unsafe_allow_html=True)
+
+                if imp_reqs:
+                    st.markdown("**Requisitions Preview**")
+                    req_prev = pd.DataFrame(imp_reqs)[["discipline","specialty","shift","req_type","bill_rate","slots_open","status","notes"]]
+                    req_prev.columns = ["Discipline","Specialty","Shift","Type","Bill Rate","Slots","Status","Notes"]
+                    st.dataframe(req_prev, use_container_width=True, hide_index=True)
+
+                if imp_cands:
+                    st.markdown("**Candidates Preview**")
+                    cand_prev = pd.DataFrame(imp_cands)[["candidate_name","source_company","discipline","specialty","status","date_sent","start_date","cred_company","cred_status"]]
+                    cand_prev.columns = ["Candidate","Source","Discipline","Specialty","Status","Date Sent","Start Date","Cred Co","Cred Status"]
+                    st.dataframe(cand_prev, use_container_width=True, hide_index=True)
+
+                st.markdown("<div style='height:0.5rem'></div>", unsafe_allow_html=True)
+                st.info("Existing records are NOT overwritten. This adds the imported records alongside anything already in the system.")
+
+                ii1, _ = st.columns([1,4])
+                with ii1:
+                    if st.button("Import All", type="primary", use_container_width=True):
+                        for r in imp_reqs:
+                            _save_record(REQ_FILE, r)
+                        for c in imp_cands:
+                            _save_record(CANDIDATE_FILE, c)
+                        st.success(f"Imported {len(imp_reqs)} requisitions and {len(imp_cands)} candidates.")
+                        st.rerun()
+
+# ══════════════════════════════════════════════════════════════════════════════
+# CANDIDATES
+# ══════════════════════════════════════════════════════════════════════════════
+elif page == "Candidates":
+    st.markdown("""
+    <div class="page-header">
+        <div>
+            <div class="page-header-title">Candidates</div>
+            <div class="page-header-sub">Submitted candidates and lifecycle tracking</div>
+        </div>
+    </div>""", unsafe_allow_html=True)
+
+    tab_view, tab_add = st.tabs(["All Candidates", "Add Candidate"])
+
+    with tab_add:
+        st.markdown("<div style='height:0.75rem'></div>", unsafe_allow_html=True)
+        st.markdown("**Candidate Info**")
+        ca1,ca2 = st.columns(2)
+        with ca1:
+            c_name      = st.text_input("Candidate Name", placeholder="First Last")
+            c_source    = st.selectbox("Source Company", SOURCE_COS)
+            c_disc      = st.selectbox("Discipline", DISCIPLINES, key="c_disc")
+            c_specialty = st.text_input("Specialty", placeholder="e.g. ER RN, Ortho Surgery")
+        with ca2:
+            # Link to req
+            req_options = ["None"]
+            if not df_reqs.empty:
+                req_options += [f"{r['specialty']} | {r.get('job_title','')} | {r.get('status','')} [{r['id'][:8]}]"
+                                for _, r in df_reqs.iterrows()]
+            linked_req_label = st.selectbox("Link to Requisition", req_options)
+            linked_req_id = None
+            if linked_req_label != "None":
+                short_id = linked_req_label.split("[")[-1].rstrip("]")
+                matches = df_reqs[df_reqs["id"].str.startswith(short_id)]
+                if not matches.empty:
+                    linked_req_id = matches.iloc[0]["id"]
+
+            c_status    = st.selectbox("Current Status", CAND_STATUSES)
+            c_shift     = st.text_input("Shift", placeholder="e.g. 12H Nights")
+
+        st.markdown("---")
+        st.markdown("**Timeline**")
+        cb1,cb2,cb3 = st.columns(3)
+        with cb1:
+            c_date_sent     = st.date_input("Date Sent to Client", value=date.today())
+            c_date_clin     = st.date_input("Clinical Call Date", value=None)
+        with cb2:
+            c_date_offered  = st.date_input("Date Offered", value=None)
+            c_date_accepted = st.date_input("Date Accepted", value=None)
+        with cb3:
+            c_start_date    = st.date_input("Start Date", value=None)
+            if c_date_sent and c_date_accepted:
+                tat = (c_date_accepted - c_date_sent).days
+                st.metric("Submission → Acceptance", f"{tat} days")
+
+        st.markdown("---")
+        st.markdown("**Notes**")
+        cn1,cn2 = st.columns(2)
+        c_notes       = cn1.text_area("Internal Notes", height=80)
+        c_rmchcs_notes= cn2.text_area("RMCHCS Notes", height=80, placeholder="Backfill for X, Curry calling, etc.")
+
+        save_b, _ = st.columns([1,4])
+        with save_b:
+            if st.button("Save Candidate", type="primary", use_container_width=True):
+                if not c_name.strip():
+                    st.error("Candidate name is required.")
+                else:
+                    _save_record(CANDIDATE_FILE, {
+                        "req_id":          linked_req_id,
+                        "candidate_name":  c_name.strip(),
+                        "source_company":  c_source,
+                        "discipline":      c_disc,
+                        "specialty":       c_specialty.strip(),
+                        "status":          c_status,
+                        "date_sent":       str(c_date_sent) if c_date_sent else "",
+                        "date_clinical_call": str(c_date_clin) if c_date_clin else "",
+                        "date_offered":    str(c_date_offered) if c_date_offered else "",
+                        "date_accepted":   str(c_date_accepted) if c_date_accepted else "",
+                        "start_date":      str(c_start_date) if c_start_date else "",
+                        "notes":           c_notes.strip(),
+                        "rmchcs_notes":    c_rmchcs_notes.strip(),
+                        "cred_company":    "", "cred_due_date": "",
+                        "cred_status":     "", "cred_nm_fingerprint": False,
+                        "cred_notes":      ""
+                    })
+                    st.success(f"Saved: {c_name} | {c_specialty} | {c_status}")
+                    st.rerun()
+
+    with tab_view:
+        st.markdown("<div style='height:0.75rem'></div>", unsafe_allow_html=True)
+        if df_cands.empty:
+            st.info("No candidates yet. Use the Add Candidate tab.")
+        else:
+            fc1,fc2,fc3 = st.columns(3)
+            filt_cs  = fc1.selectbox("Status", ["All"] + CAND_STATUSES, key="cf_status")
+            filt_src = fc2.selectbox("Source", ["All"] + SOURCE_COS, key="cf_source")
+            filt_csp = fc3.text_input("Search Name / Specialty", key="cf_search")
+
+            vc = df_cands.copy()
+            if filt_cs  != "All": vc = vc[vc["status"]==filt_cs]
+            if filt_src != "All": vc = vc[vc["source_company"]==filt_src]
+            if filt_csp:
+                mask = (vc["candidate_name"].str.contains(filt_csp, case=False, na=False) |
+                        vc["specialty"].str.contains(filt_csp, case=False, na=False))
+                vc = vc[mask]
+
+            st.markdown(f"**{len(vc)} candidates** in current view")
+
+            for _, cand in vc.sort_values("date_sent", ascending=False).iterrows():
+                src_badge = f" 🔷 Springboard" if cand.get("source_company")=="Springboard" else f" [{cand.get('source_company','')}]"
+                status_icon = {"Placed":"✅","Accepted":"🟢","Offered":"🟡",
+                               "Clinical Call Scheduled":"🔵","Submitted":"⚪",
+                               "Declined by Candidate":"🔴","Declined by Client":"🔴",
+                               "Cancelled":"⚫"}.get(cand.get("status",""),"⚪")
+                with st.expander(f"{status_icon} {cand.get('candidate_name','')}{src_badge} | {cand.get('specialty','')} | {cand.get('status','')}"):
+                    d1,d2,d3 = st.columns(3)
+                    d1.write(f"**Sent:** {cand.get('date_sent','')}")
+                    d2.write(f"**Clinical Call:** {cand.get('date_clinical_call','') or 'N/A'}")
+                    d3.write(f"**Offered:** {cand.get('date_offered','') or 'N/A'}")
+                    d1.write(f"**Accepted:** {cand.get('date_accepted','') or 'N/A'}")
+                    d2.write(f"**Start Date:** {cand.get('start_date','') or 'N/A'}")
+
+                    # Turnaround
+                    if cand.get("date_sent") and cand.get("date_accepted"):
+                        try:
+                            tat = (date.fromisoformat(str(cand["date_accepted"])) -
+                                   date.fromisoformat(str(cand["date_sent"]))).days
+                            d3.write(f"**Submit → Accept:** {tat} days")
+                        except: pass
+
+                    if cand.get("rmchcs_notes"): st.write(f"**RMCHCS Notes:** {cand.get('rmchcs_notes','')}")
+                    if cand.get("notes"):         st.write(f"**Internal Notes:** {cand.get('notes','')}")
+
+                    # Credentialing section
+                    st.markdown("**Credentialing**")
+                    cr1,cr2,cr3,cr4 = st.columns(4)
+                    new_cred_co     = cr1.text_input("Cred Company", value=cand.get("cred_company",""), key=f"cc_{cand['id']}")
+                    new_cred_due    = cr2.text_input("Due Date (YYYY-MM-DD)", value=cand.get("cred_due_date",""), key=f"cd_{cand['id']}")
+                    new_cred_status = cr3.selectbox("Cred Status", [""]+CRED_STATUSES,
+                                                     index=([""]+CRED_STATUSES).index(cand.get("cred_status","")) if cand.get("cred_status","") in [""]+CRED_STATUSES else 0,
+                                                     key=f"cs_{cand['id']}")
+                    new_cred_nm     = cr4.checkbox("NM Fingerprint", value=bool(cand.get("cred_nm_fingerprint",False)), key=f"cn_{cand['id']}")
+                    new_cred_notes  = st.text_area("Credentialing Notes", value=cand.get("cred_notes",""), height=60, key=f"cno_{cand['id']}")
+
+                    # Status update
+                    st.markdown("**Update**")
+                    up1,up2,up3,up4 = st.columns(4)
+                    new_cand_status = up1.selectbox("Candidate Status", CAND_STATUSES,
+                                                     index=CAND_STATUSES.index(cand["status"]) if cand.get("status") in CAND_STATUSES else 0,
+                                                     key=f"csu_{cand['id']}")
+                    new_date_offered  = up2.text_input("Date Offered", value=cand.get("date_offered",""), key=f"cdo_{cand['id']}")
+                    new_date_accepted = up3.text_input("Date Accepted", value=cand.get("date_accepted",""), key=f"cda_{cand['id']}")
+                    new_start         = up4.text_input("Start Date", value=cand.get("start_date",""), key=f"csd_{cand['id']}")
+
+                    sb1,sb2 = st.columns([1,1])
+                    with sb1:
+                        if st.button("Save Updates", key=f"cu_{cand['id']}", type="primary"):
+                            _update_record(CANDIDATE_FILE, cand["id"], {
+                                "status":              new_cand_status,
+                                "date_offered":        new_date_offered,
+                                "date_accepted":       new_date_accepted,
+                                "start_date":          new_start,
+                                "cred_company":        new_cred_co,
+                                "cred_due_date":       new_cred_due,
+                                "cred_status":         new_cred_status,
+                                "cred_nm_fingerprint": new_cred_nm,
+                                "cred_notes":          new_cred_notes
+                            })
+                            st.success("Updated.")
+                            st.rerun()
+                    with sb2:
+                        if st.button("Delete", key=f"cdel_{cand['id']}", type="secondary"):
+                            _delete_record(CANDIDATE_FILE, cand["id"])
+                            st.success("Deleted.")
+                            st.rerun()
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# CREDENTIALING VIEW
+# ══════════════════════════════════════════════════════════════════════════════
+elif page == "Credentialing":
+    st.markdown("""
+    <div class="page-header">
+        <div>
+            <div class="page-header-title">Credentialing</div>
+            <div class="page-header-sub">Status across all active candidates</div>
+        </div>
+    </div>""", unsafe_allow_html=True)
+
+    if df_cands.empty:
+        st.info("No candidates yet.")
+        st.stop()
+
+    cred_df = df_cands[df_cands["cred_company"].notna() & (df_cands["cred_company"] != "")].copy()               if "cred_company" in df_cands.columns else pd.DataFrame()
+
+    if cred_df.empty:
+        st.info("No credentialing records yet. Add credentialing details from the Candidates page.")
+        st.stop()
+
+    today_str = date.today().isoformat()
+
+    # Flag overdue
+    def cred_flag(row):
+        if row.get("cred_status") in ["Clear","Cancelled"]: return "✅ Clear"
+        if row.get("cred_due_date") and str(row.get("cred_due_date","")) <= today_str: return "🔴 Overdue"
+        if row.get("cred_due_date"): return "🟡 Pending"
+        return "⚪ No Date"
+
+    cred_df["flag"] = cred_df.apply(cred_flag, axis=1)
+
+    # Summary
+    ck1,ck2,ck3,ck4 = st.columns(4)
+    ck1.metric("Total Credentialing", len(cred_df))
+    ck2.metric("Clear",    len(cred_df[cred_df["flag"]=="✅ Clear"]))
+    ck3.metric("Pending",  len(cred_df[cred_df["flag"]=="🟡 Pending"]))
+    ck4.metric("Overdue",  len(cred_df[cred_df["flag"]=="🔴 Overdue"]))
+
+    st.markdown("<div style='height:1rem'></div>", unsafe_allow_html=True)
+
+    filt_cred = st.selectbox("Filter by Status", ["All","🔴 Overdue","🟡 Pending","✅ Clear","⚪ No Date"])
+    view_cred = cred_df if filt_cred=="All" else cred_df[cred_df["flag"]==filt_cred]
+
+    disp_cred = view_cred[["flag","candidate_name","specialty","cred_company",
+                             "cred_due_date","cred_status","cred_nm_fingerprint","cred_notes"]].copy()
+    disp_cred["cred_nm_fingerprint"] = disp_cred["cred_nm_fingerprint"].apply(lambda x: "Yes" if x else "No")
+    disp_cred.columns = ["Flag","Candidate","Specialty","Cred Company",
+                          "Due Date","Status","NM Fingerprint","Notes"]
+    st.dataframe(disp_cred.sort_values("Due Date"), use_container_width=True, hide_index=True)
+
+# Separator page (divider in sidebar)
+elif page == "─────────────":
+    st.info("Select a section from the sidebar.")
