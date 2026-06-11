@@ -250,13 +250,26 @@ def generate_pdf_report(df, week_ending, title, prepared_by="Vista Staffing Solu
     # KPI row
     total_spend     = df["total_spend"].sum()
     total_providers = df["provider_name"].nunique()
-    total_days      = df["days_worked"].sum()
     total_specs     = df["specialty"].nunique()
+
+    has_hourly = df["hours_worked"].notna().any() and (df["hours_worked"].fillna(0) > 0).any()
+    has_daily  = df["days_worked"].notna().any()  and (df["days_worked"].fillna(0)  > 0).any()
+    if has_hourly and not has_daily:
+        kpi4_label = "TOTAL HOURS"
+        kpi4_val   = f"{df['hours_worked'].fillna(0).sum():.1f} hrs"
+    elif has_daily and not has_hourly:
+        kpi4_label = "TOTAL DAYS"
+        kpi4_val   = f"{df['days_worked'].fillna(0).sum():.1f} days"
+    else:
+        kpi4_label = "TOTAL HOURS"
+        tot_hrs_v  = df["hours_worked"].fillna(0).sum()
+        tot_days_v = df["days_worked"].fillna(0).sum()
+        kpi4_val   = f"{tot_hrs_v:.1f} hrs / {tot_days_v:.1f} days"
 
     kpi_items = [("TOTAL SPEND", f"${total_spend:,.2f}"),
                  ("PROVIDERS",   str(total_providers)),
                  ("SPECIALTIES", str(total_specs)),
-                 ("TOTAL DAYS",  f"{total_days:.1f}")]
+                 (kpi4_label,    kpi4_val)]
     kpi_cells = [[Paragraph(l, kpi_lbl_style) for l,_ in kpi_items],
                  [Paragraph(v, kpi_val_style) for _,v in kpi_items]]
     kpi_tbl = Table(kpi_cells, colWidths=[1.74*inch]*4)
@@ -272,18 +285,42 @@ def generate_pdf_report(df, week_ending, title, prepared_by="Vista Staffing Solu
 
     # Specialty summary
     story.append(Paragraph("Spend by Specialty", section_style))
+    spec_hrs_map  = df.groupby("specialty")["hours_worked"].sum()
+    spec_days_map = df.groupby("specialty")["days_worked"].sum()
     spec = df.groupby("specialty").agg(
         Providers=("provider_name","nunique"),
-        Days=("days_worked","sum"),
         Spend=("total_spend","sum")
     ).reset_index().sort_values("Spend", ascending=False)
+    spec["Hours"] = spec["specialty"].map(spec_hrs_map).fillna(0)
+    spec["Days"]  = spec["specialty"].map(spec_days_map).fillna(0)
 
-    spec_rows = [["Specialty","Providers","Days Worked","Total Spend","% of Week"]]
+    if has_hourly and not has_daily:
+        qty_col_hdr = "Hours Worked"
+    elif has_daily and not has_hourly:
+        qty_col_hdr = "Days Worked"
+    else:
+        qty_col_hdr = "Hrs / Days"
+
+    spec_rows = [["Specialty","Providers", qty_col_hdr, "Total Spend","% of Week"]]
     for _, row in spec.iterrows():
         pct = (row["Spend"]/total_spend*100) if total_spend else 0
+        if has_hourly and not has_daily:
+            qty_str = f"{row['Hours']:.1f} hrs"
+        elif has_daily and not has_hourly:
+            qty_str = f"{row['Days']:.1f} days"
+        else:
+            qty_str = f"{row['Hours']:.1f}h / {row['Days']:.1f}d"
         spec_rows.append([row["specialty"], str(int(row["Providers"])),
-                          f"{row['Days']:.1f}", f"${row['Spend']:,.2f}", f"{pct:.1f}%"])
-    spec_rows.append(["TOTAL", str(total_providers), f"{total_days:.1f}", f"${total_spend:,.2f}", "100%"])
+                          qty_str, f"${row['Spend']:,.2f}", f"{pct:.1f}%"])
+    tot_hrs_s  = df["hours_worked"].fillna(0).sum()
+    tot_days_s = df["days_worked"].fillna(0).sum()
+    if has_hourly and not has_daily:
+        tot_qty_str = f"{tot_hrs_s:.1f} hrs"
+    elif has_daily and not has_hourly:
+        tot_qty_str = f"{tot_days_s:.1f} days"
+    else:
+        tot_qty_str = f"{tot_hrs_s:.1f}h / {tot_days_s:.1f}d"
+    spec_rows.append(["TOTAL", str(total_providers), tot_qty_str, f"${total_spend:,.2f}", "100%"])
 
     st_tbl = Table(spec_rows, colWidths=[2.4*inch,1.0*inch,1.0*inch,1.3*inch,0.95*inch])
     st_tbl.setStyle(TableStyle([
