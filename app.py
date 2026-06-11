@@ -383,16 +383,27 @@ def generate_pdf_report(df, week_ending, title, prepared_by="Vista Staffing Solu
             if include_notes:
                 r.append(str(row.get("notes","") or ""))
             det_rows.append(r)
-        cw = [1.35*inch,0.6*inch,1.0*inch,0.7*inch,0.7*inch,0.85*inch,0.75*inch,1.2*inch] if include_notes \
-             else [1.8*inch,0.75*inch,1.35*inch,0.85*inch,0.7*inch,0.9*inch,0.85*inch]
-        det_tbl = Table(hdr_row+det_rows, colWidths=cw)
+        # Wrap notes in Paragraph so long strings word-wrap instead of overflow
+        if include_notes:
+            notes_style = ParagraphStyle("ns", fontName="Helvetica", fontSize=7, textColor=SLATE, leading=9)
+            for r in det_rows:
+                r[-1] = Paragraph(str(r[-1]), notes_style)
+            # Col widths: Provider, Type, Specialty, SvcLine, Hrs/Days, Rate, Total, Notes
+            # Total usable width = 7.0 inch (letter - margins)
+            cw = [1.3*inch,0.55*inch,0.95*inch,0.65*inch,0.7*inch,0.82*inch,0.78*inch,1.25*inch]
+        else:
+            cw = [1.8*inch,0.75*inch,1.35*inch,0.85*inch,0.7*inch,0.9*inch,0.85*inch]
+        det_tbl = Table(hdr_row+det_rows, colWidths=cw, repeatRows=1)
         det_tbl.setStyle(TableStyle([
             ("BACKGROUND",(0,0),(-1,0),BLUE), ("TEXTCOLOR",(0,0),(-1,0),WHITE),
             ("FONTNAME",(0,0),(-1,0),"Helvetica-Bold"), ("FONTSIZE",(0,0),(-1,0),7.5),
             ("FONTNAME",(0,1),(-1,-1),"Helvetica"),     ("FONTSIZE",(0,1),(-1,-1),7.5),
             ("TEXTCOLOR",(0,1),(-1,-1),NAVY),
             ("ROWBACKGROUNDS",(0,1),(-1,-1),[WHITE,LIGHT]),
-            ("ALIGN",(4,0),(-1,-1),"CENTER"), ("ALIGN",(6,0),(6,-1),"RIGHT"),
+            ("ALIGN",(4,0),(5,-1),"CENTER"),
+            ("ALIGN",(6,0),(6,-1),"RIGHT"),
+            ("RIGHTPADDING",(6,0),(6,-1),8),
+            ("VALIGN",(0,0),(-1,-1),"TOP"),
             ("TOPPADDING",(0,0),(-1,-1),5), ("BOTTOMPADDING",(0,0),(-1,-1),5),
             ("LEFTPADDING",(0,0),(0,-1),8), ("GRID",(0,0),(-1,-1),0.3,BORDER),
         ]))
