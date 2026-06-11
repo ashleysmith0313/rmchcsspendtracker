@@ -1843,17 +1843,17 @@ elif page == "Requisitions":
                         updates = {col_map[k]: row[k] for k in col_map if k in row}
                         _update_record(REQ_FILE, rec_id, updates)
                         saved += 1
-                        # Cascade: if req just set to Closed or Filled, close active candidates
+                        # Cascade: any req saved as Closed or Filled floods active candidates to Job Closed
                         if updates.get("status") in ("Closed", "Filled"):
-                            orig = df_reqs[df_reqs["id"]==rec_id]
-                            orig_status = orig.iloc[0]["status"] if not orig.empty else ""
-                            if orig_status != updates["status"]:  # only if status actually changed
-                                cands_data = _load(CANDIDATE_FILE)
-                                for c in cands_data:
-                                    if c.get("req_id") == rec_id and c.get("status") in ACTIVE_CAND_STATUSES:
-                                        c["status"] = "Job Closed"
-                                        c["updated_at"] = datetime.now().isoformat()
-                                        cascaded += 1
+                            cands_data = _load(CANDIDATE_FILE)
+                            changed = False
+                            for c in cands_data:
+                                if c.get("req_id") == rec_id and c.get("status") in ACTIVE_CAND_STATUSES:
+                                    c["status"] = "Job Closed"
+                                    c["updated_at"] = datetime.now().isoformat()
+                                    cascaded += 1
+                                    changed = True
+                            if changed:
                                 with open(CANDIDATE_FILE, "w") as f:
                                     json.dump(cands_data, f, indent=2)
                     msg = f"{saved} requisition(s) saved."
