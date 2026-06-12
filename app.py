@@ -2296,20 +2296,38 @@ elif page == "Program ROI":
     if placed.empty and df.empty:
         st.info("No placed candidates or logged spend yet. Place a candidate and log spend to see ROI.")
     else:
-        # ── Step 1: Volume & Specialty config per provider ─────────────────────
-        st.markdown("#### Provider Volume Configuration")
-        st.caption("Enter weekly procedure/encounter volume per provider. Specialty and reimbursement rate are pre-filled from DiagnOS benchmarks — override as needed.")
+        # ── Step 1: MD/APP Revenue Providers config ──────────────────────────────
+        # MD/APP disciplines drive revenue — Nursing/Allied are cost-only
+        MD_APP_DISCIPLINES = {"Physician", "APP", "Locums"}
+        NURSING_ALLIED_DISCIPLINES = {"Nursing", "Allied Health"}
+
+        st.markdown("#### MD & APP Revenue Configuration")
+        st.caption("Revenue providers only. Specialty and reimbursement rate pre-fill from DiagnOS benchmarks — the rate field updates when you change the specialty dropdown. Override with RMCHCS actual rates as needed.")
 
         provider_rows = []
 
-        # Build list from placed candidates; fall back to spend log providers if none
+        # Filter placed to MD/APP only
         if not placed.empty:
-            provider_names = placed["candidate_name"].dropna().unique().tolist()
+            revenue_placed = placed[
+                placed.get("discipline", pd.Series(dtype=str)).isin(MD_APP_DISCIPLINES) |
+                placed["discipline"].isna()
+            ].copy() if "discipline" in placed.columns else placed.copy()
+            # Exclude clearly allied/nursing names if discipline missing
+            revenue_placed = revenue_placed[
+                ~revenue_placed.get("discipline", pd.Series(dtype=str)).isin(NURSING_ALLIED_DISCIPLINES)
+            ] if "discipline" in revenue_placed.columns else revenue_placed
+            revenue_provider_names = revenue_placed["candidate_name"].dropna().unique().tolist()
+            cost_only_placed = placed[
+                placed.get("discipline", pd.Series(dtype=str)).isin(NURSING_ALLIED_DISCIPLINES)
+            ].copy() if "discipline" in placed.columns else pd.DataFrame()
         else:
-            provider_names = df["provider_name"].dropna().unique().tolist() if not df.empty else []
+            revenue_provider_names = []
+            cost_only_placed = pd.DataFrame()
 
-        if not provider_names:
-            st.warning("No providers found. Add placed candidates or log spend entries.")
+        specialty_options = sorted(SPECIALTY_REVENUE.keys())
+
+        if not revenue_provider_names:
+            st.info("No placed MD/APP providers yet. Once candidates with Physician, APP, or Locums discipline are placed, they appear here.")
         else:
             cols_hdr = st.columns([3,2,2,2,1])
             cols_hdr[0].markdown("**Provider**")
@@ -2320,63 +2338,90 @@ elif page == "Program ROI":
 
             st.markdown("<hr style='margin:4px 0 8px 0; border-color:#e2e8f0'>", unsafe_allow_html=True)
 
-            specialty_options = sorted(SPECIALTY_REVENUE.keys())
-
-            for pname in provider_names:
+            for pname in revenue_provider_names:
                 cfg = roi_config.get(pname, {})
-                # Try to get specialty from placed candidate record
-                if not placed.empty:
-                    match = placed[placed["candidate_name"] == pname]
-                    default_spec = match.iloc[0].get("specialty", "Other / Custom") if not match.empty else "Other / Custom"
+
+                # Get specialty from candidate record
+                if not revenue_placed.empty:
+                    match = revenue_placed[revenue_placed["candidate_name"] == pname]
+                    cand_spec = match.iloc[0].get("specialty", "") if not match.empty else ""
                 else:
-                    default_spec = cfg.get("specialty", "Other / Custom")
+                    cand_spec = ""
 
-                # Normalize specialty to closest key
-                if default_spec not in SPECIALTY_REVENUE:
-                    default_spec = "Other / Custom"
-
-                default_rate, default_unit = SPECIALTY_REVENUE.get(default_spec, (0.0, "encounters"))
+                # Resolve specialty: saved config → candidate field → "Other / Custom"
+                saved_spec = cfg.get("specialty", "")
+                if saved_spec and saved_spec in SPECIALTY_REVENUE:
+                    resolved_spec = saved_spec
+                elif cand_spec and cand_spec in SPECIALTY_REVENUE:
+                    resolved_spec = cand_spec
+                else:
+                    resolved_spec = "Other / Custom"
 
                 c1, c2, c3, c4, c5 = st.columns([3,2,2,2,1])
                 c1.markdown(f"**{pname}**")
 
-                spec_idx = specialty_options.index(default_spec) if default_spec in specialty_options else 0
+                spec_idx = specialty_options.index(resolved_spec) if resolved_spec in specialty_options else 0
                 sel_spec = c2.selectbox("Specialty", specialty_options,
                                         index=spec_idx,
                                         key=f"roi_spec_{pname}",
                                         label_visibility="collapsed")
 
-                rate_val, unit_val = SPECIALTY_REVENUE.get(sel_spec, (default_rate, default_unit))
-                override_rate = c3.number_input("Rate", value=float(cfg.get("rate", rate_val)),
+                # Rate: ALWAYS drive from current dropdown selection first,
+                # then fall back to saved override only if specialty matches saved
+                benchmark_rate, unit_val = SPECIALTY_REVENUE.get(sel_spec, (0.0, "encounters"))
+                saved_rate = cfg.get("rate", None)
+                saved_spec_for_rate = cfg.get("specialty", "")
+                # Use saved rate only if it was saved against THIS same specialty
+                if saved_rate is not None and saved_spec_for_rate == sel_spec:
+                    init_rate = float(saved_rate)
+                else:
+                    init_rate = float(benchmark_rate)
+
+                override_rate = c3.number_input("Rate", value=init_rate,
                                                 min_value=0.0, step=10.0,
-                                                key=f"roi_rate_{pname}",
+                                                key=f"roi_rate_{pname}_{sel_spec}",
                                                 label_visibility="collapsed")
-                vol_per_wk = c4.number_input("Vol/Wk", value=float(cfg.get("volume_per_week", 20.0)),
+                vol_per_wk = c4.number_input("Vol/Wk",
+                                              value=float(cfg.get("volume_per_week", 20.0)),
                                               min_value=0.0, step=1.0,
                                               key=f"roi_vol_{pname}",
                                               label_visibility="collapsed")
-                c5.markdown(f"<div style='padding-top:8px; font-size:0.78rem; color:#64748b'>{unit_val}</div>",
-                            unsafe_allow_html=True)
+                c5.markdown(
+                    f"<div style='padding-top:8px;font-size:0.78rem;color:#64748b'>{unit_val}</div>",
+                    unsafe_allow_html=True)
 
                 provider_rows.append({
-                    "provider": pname,
-                    "specialty": sel_spec,
-                    "rate": override_rate,
+                    "provider":        pname,
+                    "specialty":       sel_spec,
+                    "rate":            override_rate,
                     "volume_per_week": vol_per_wk,
-                    "unit": unit_val,
+                    "unit":            unit_val,
                 })
 
             sv1, sv2, _ = st.columns([1,1,4])
             if sv1.button("Save Configuration", type="primary", use_container_width=True):
                 for row in provider_rows:
                     roi_config[row["provider"]] = {
-                        "specialty": row["specialty"],
-                        "rate": row["rate"],
+                        "specialty":       row["specialty"],
+                        "rate":            row["rate"],
                         "volume_per_week": row["volume_per_week"],
                     }
                 _save_roi(roi_config)
                 st.success("Configuration saved.")
                 st.rerun()
+
+        # ── Cost-only section: Nursing / Allied ───────────────────────────────
+        if not cost_only_placed.empty:
+            st.markdown("---")
+            st.markdown("#### Nursing & Allied Health — Cost Tracking")
+            st.caption("These providers are cost lines only. No revenue attribution.")
+            cost_names = cost_only_placed["candidate_name"].dropna().unique().tolist()
+            cost_data = []
+            for cname in cost_names:
+                disc = cost_only_placed[cost_only_placed["candidate_name"]==cname]["discipline"].values
+                disc_val = disc[0] if len(disc) > 0 else "Allied Health"
+                cost_data.append({"Provider": cname, "Discipline": disc_val})
+            st.dataframe(pd.DataFrame(cost_data), use_container_width=True, hide_index=True)
 
             st.markdown("---")
 
