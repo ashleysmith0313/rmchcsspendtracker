@@ -991,7 +991,9 @@ with st.sidebar:
     page = st.radio("Navigate", [
         "Spend Dashboard", "Log Spend", "Manage Entries", "Generate Report",
         "─────────────",
-        "Pipeline Dashboard", "Requisitions", "Candidates", "Credentialing"
+        "Pipeline Dashboard", "Requisitions", "Candidates", "Credentialing",
+        "─────────────",
+        "Program ROI"
     ], index=0)
     st.markdown("---")
     if not df.empty:
@@ -2206,5 +2208,334 @@ elif page == "Credentialing":
     st.dataframe(disp_cred.sort_values("Due Date"), use_container_width=True, hide_index=True)
 
 # Separator page (divider in sidebar)
+
+# ══════════════════════════════════════════════════════════════════════════════
+# PROGRAM ROI  — DiagnOS-powered
+# ══════════════════════════════════════════════════════════════════════════════
+elif page == "Program ROI":
+    # ── Revenue benchmarks pulled from DiagnOS data ───────────────────────────
+    SPECIALTY_REVENUE = {
+        "Allergy/Immunology":          (280.0,   "encounters"),
+        "Anesthesia (MD)":             (500.0,   "cases"),
+        "Cardiology (Non-Invasive)":   (4611.0,  "cases"),
+        "Cardiothoracic Surgery":      (8500.0,  "cases"),
+        "Cardiovascular Surgery":      (8000.0,  "cases"),
+        "Critical Care":               (500.0,   "patient-days"),
+        "Dermatology":                 (380.0,   "encounters"),
+        "Emergency Medicine":          (620.0,   "visits"),
+        "Endocrinology":               (185.0,   "encounters"),
+        "ENT (Otolaryngology)":        (1400.0,  "cases"),
+        "Family Practice/Primary Care":(185.0,   "visits"),
+        "Gastroenterology (GI)":       (1362.0,  "cases"),
+        "GI Motility Specialist":      (320.0,   "encounters"),
+        "General Surgery":             (3200.0,  "cases"),
+        "Hematology Oncology":         (1850.0,  "encounters"),
+        "Hospitalist":                 (880.0,   "visits"),
+        "Infectious Disease":          (200.0,   "encounters"),
+        "Internal Medicine":           (175.0,   "encounters"),
+        "Interventional Cardiology":   (8200.0,  "cases"),
+        "Medical Oncology":            (1500.0,  "encounters"),
+        "Nephrology":                  (220.0,   "encounters"),
+        "Neurology":                   (350.0,   "encounters"),
+        "Neurosurgery":                (6500.0,  "cases"),
+        "OB/GYN":                      (250.0,   "visits"),
+        "Orthopedic Surgery":          (6419.0,  "cases"),
+        "Orthopedic - Hand Surgery":   (5800.0,  "cases"),
+        "Orthopedic - Trauma Surgery": (6800.0,  "cases"),
+        "Pathology":                   (180.0,   "cases"),
+        "Pediatrics":                  (140.0,   "encounters"),
+        "Physical Medicine":           (280.0,   "encounters"),
+        "Psychiatry":                  (275.0,   "visits"),
+        "Pulmonology":                 (280.0,   "encounters"),
+        "Radiation Oncology":          (1800.0,  "cases"),
+        "Radiology":                   (150.0,   "reads"),
+        "Radiology - Interventional":  (1200.0,  "procedures"),
+        "Rheumatology":                (200.0,   "encounters"),
+        "Trauma Surgery":              (7500.0,  "cases"),
+        "Urgent Care":                 (210.0,   "visits"),
+        "Urology":                     (1887.0,  "cases"),
+        "Vascular Surgery":            (4500.0,  "cases"),
+        # APP
+        "APP - Cardiology":            (380.0,   "visits"),
+        "APP - Critical Care":         (320.0,   "patient-days"),
+        "APP - Emergency Medicine":    (440.0,   "visits"),
+        "APP - General Surgery":       (900.0,   "cases"),
+        "APP - Hospitalist":           (680.0,   "visits"),
+        "APP - Neurology":             (240.0,   "encounters"),
+        "APP - Oncology":              (750.0,   "encounters"),
+        "APP - Orthopedic Surgery":    (900.0,   "cases"),
+        "APP - Psychiatry (PMHNP)":    (220.0,   "visits"),
+        "CRNA":                        (350.0,   "cases"),
+        "Other / Custom":              (0.0,     "encounters"),
+    }
+
+    # ── ROI volume config (persisted in session state) ─────────────────────────
+    ROI_FILE = "roi_config.json"
+    def _load_roi():
+        if os.path.exists(ROI_FILE):
+            with open(ROI_FILE) as f:
+                return json.load(f)
+        return {}
+    def _save_roi(data):
+        with open(ROI_FILE, "w") as f:
+            json.dump(data, f, indent=2)
+
+    roi_config = _load_roi()
+
+    st.markdown("""
+    <div class="page-header">
+        <div>
+            <div class="page-header-title">Program ROI</div>
+            <div class="page-header-sub">Real revenue vs actual labor cost — powered by DiagnOS benchmarks</div>
+        </div>
+    </div>""", unsafe_allow_html=True)
+
+    # ── Pull placed providers from candidates + their spend ───────────────────
+    placed = df_cands[df_cands["status"] == "Placed"].copy() if not df_cands.empty else pd.DataFrame()
+
+    if placed.empty and df.empty:
+        st.info("No placed candidates or logged spend yet. Place a candidate and log spend to see ROI.")
+    else:
+        # ── Step 1: Volume & Specialty config per provider ─────────────────────
+        st.markdown("#### Provider Volume Configuration")
+        st.caption("Enter weekly procedure/encounter volume per provider. Specialty and reimbursement rate are pre-filled from DiagnOS benchmarks — override as needed.")
+
+        provider_rows = []
+
+        # Build list from placed candidates; fall back to spend log providers if none
+        if not placed.empty:
+            provider_names = placed["candidate_name"].dropna().unique().tolist()
+        else:
+            provider_names = df["provider_name"].dropna().unique().tolist() if not df.empty else []
+
+        if not provider_names:
+            st.warning("No providers found. Add placed candidates or log spend entries.")
+        else:
+            cols_hdr = st.columns([3,2,2,2,1])
+            cols_hdr[0].markdown("**Provider**")
+            cols_hdr[1].markdown("**Specialty**")
+            cols_hdr[2].markdown("**Rate/Unit ($)**")
+            cols_hdr[3].markdown("**Units/Week**")
+            cols_hdr[4].markdown("**Unit**")
+
+            st.markdown("<hr style='margin:4px 0 8px 0; border-color:#e2e8f0'>", unsafe_allow_html=True)
+
+            specialty_options = sorted(SPECIALTY_REVENUE.keys())
+
+            for pname in provider_names:
+                cfg = roi_config.get(pname, {})
+                # Try to get specialty from placed candidate record
+                if not placed.empty:
+                    match = placed[placed["candidate_name"] == pname]
+                    default_spec = match.iloc[0].get("specialty", "Other / Custom") if not match.empty else "Other / Custom"
+                else:
+                    default_spec = cfg.get("specialty", "Other / Custom")
+
+                # Normalize specialty to closest key
+                if default_spec not in SPECIALTY_REVENUE:
+                    default_spec = "Other / Custom"
+
+                default_rate, default_unit = SPECIALTY_REVENUE.get(default_spec, (0.0, "encounters"))
+
+                c1, c2, c3, c4, c5 = st.columns([3,2,2,2,1])
+                c1.markdown(f"**{pname}**")
+
+                spec_idx = specialty_options.index(default_spec) if default_spec in specialty_options else 0
+                sel_spec = c2.selectbox("Specialty", specialty_options,
+                                        index=spec_idx,
+                                        key=f"roi_spec_{pname}",
+                                        label_visibility="collapsed")
+
+                rate_val, unit_val = SPECIALTY_REVENUE.get(sel_spec, (default_rate, default_unit))
+                override_rate = c3.number_input("Rate", value=float(cfg.get("rate", rate_val)),
+                                                min_value=0.0, step=10.0,
+                                                key=f"roi_rate_{pname}",
+                                                label_visibility="collapsed")
+                vol_per_wk = c4.number_input("Vol/Wk", value=float(cfg.get("volume_per_week", 20.0)),
+                                              min_value=0.0, step=1.0,
+                                              key=f"roi_vol_{pname}",
+                                              label_visibility="collapsed")
+                c5.markdown(f"<div style='padding-top:8px; font-size:0.78rem; color:#64748b'>{unit_val}</div>",
+                            unsafe_allow_html=True)
+
+                provider_rows.append({
+                    "provider": pname,
+                    "specialty": sel_spec,
+                    "rate": override_rate,
+                    "volume_per_week": vol_per_wk,
+                    "unit": unit_val,
+                })
+
+            sv1, sv2, _ = st.columns([1,1,4])
+            if sv1.button("Save Configuration", type="primary", use_container_width=True):
+                for row in provider_rows:
+                    roi_config[row["provider"]] = {
+                        "specialty": row["specialty"],
+                        "rate": row["rate"],
+                        "volume_per_week": row["volume_per_week"],
+                    }
+                _save_roi(roi_config)
+                st.success("Configuration saved.")
+                st.rerun()
+
+            st.markdown("---")
+
+            # ── Step 2: Date range for calculation ────────────────────────────
+            st.markdown("#### Analysis Period")
+            dc1, dc2 = st.columns(2)
+            try:
+                min_date = date.fromisoformat(str(df["week_ending"].min())) if not df.empty else date.today() - timedelta(days=90)
+                max_date = date.fromisoformat(str(df["week_ending"].max())) if not df.empty else date.today()
+            except Exception:
+                min_date = date.today() - timedelta(days=90)
+                max_date = date.today()
+
+            start_date = dc1.date_input("From", value=min_date, key="roi_start")
+            end_date   = dc2.date_input("To",   value=max_date, key="roi_end")
+
+            # ── Step 3: Compute ROI ───────────────────────────────────────────
+            if not df.empty:
+                spend_filtered = df.copy()
+                try:
+                    spend_filtered["_we"] = pd.to_datetime(spend_filtered["week_ending"]).dt.date
+                    spend_filtered = spend_filtered[
+                        (spend_filtered["_we"] >= start_date) &
+                        (spend_filtered["_we"] <= end_date)
+                    ]
+                except Exception:
+                    pass
+            else:
+                spend_filtered = pd.DataFrame()
+
+            # Number of weeks in period
+            period_days  = max(1, (end_date - start_date).days)
+            period_weeks = period_days / 7.0
+
+            results = []
+            for row in provider_rows:
+                pname    = row["provider"]
+                rate     = row["rate"]
+                vol_wk   = row["volume_per_week"]
+                unit     = row["unit"]
+
+                # Actual spend for this provider
+                if not spend_filtered.empty and "provider_name" in spend_filtered.columns:
+                    provider_spend = spend_filtered[
+                        spend_filtered["provider_name"].str.lower().str.contains(
+                            pname.split()[0].lower(), na=False)
+                    ]["total_spend"].sum()
+                else:
+                    provider_spend = 0.0
+
+                # Estimated revenue
+                est_revenue  = vol_wk * rate * period_weeks
+                net_contrib  = est_revenue - provider_spend
+                roi_pct      = ((net_contrib / provider_spend) * 100) if provider_spend > 0 else 0.0
+
+                results.append({
+                    "Provider":          pname,
+                    "Specialty":         row["specialty"],
+                    "Labor Cost":        provider_spend,
+                    "Est. Revenue":      est_revenue,
+                    "Net Contribution":  net_contrib,
+                    "ROI %":             roi_pct,
+                    "Units/Wk":          vol_wk,
+                    "Rate/Unit":         rate,
+                    "Unit":              unit,
+                })
+
+            if results:
+                st.markdown("---")
+                st.markdown("#### Program ROI Dashboard")
+
+                total_cost  = sum(r["Labor Cost"]       for r in results)
+                total_rev   = sum(r["Est. Revenue"]     for r in results)
+                total_net   = sum(r["Net Contribution"] for r in results)
+                prog_roi    = ((total_net / total_cost) * 100) if total_cost > 0 else 0.0
+
+                # KPI cards
+                k1, k2, k3, k4 = st.columns(4)
+                def _kpi(col, label, val, fmt="$", delta=None):
+                    if fmt == "$":
+                        disp = f"${val:,.0f}"
+                    elif fmt == "%":
+                        disp = f"{val:.1f}%"
+                    else:
+                        disp = str(val)
+                    delta_html = ""
+                    if delta is not None:
+                        clr = "#10b981" if delta >= 0 else "#ef4444"
+                        sign = "+" if delta >= 0 else ""
+                        delta_html = f'<div style="font-size:0.78rem;color:{clr};font-weight:600">{sign}{delta:.1f}%</div>'
+                    col.markdown(
+                        f'<div class="kpi-card">'
+                        f'<div class="kpi-label">{label}</div>'
+                        f'<div class="kpi-value">{disp}</div>'
+                        f'{delta_html}'
+                        f'</div>', unsafe_allow_html=True)
+
+                _kpi(k1, "Total Labor Cost",      total_cost)
+                _kpi(k2, "Estimated Revenue",     total_rev)
+                _kpi(k3, "Net Contribution",       total_net,  delta=prog_roi)
+                _kpi(k4, "Program ROI",            prog_roi, fmt="%")
+
+                st.markdown("<div style='height:1rem'></div>", unsafe_allow_html=True)
+
+                # Provider breakdown table
+                df_results = pd.DataFrame(results)
+                disp_cols  = ["Provider","Specialty","Labor Cost","Est. Revenue","Net Contribution","ROI %","Units/Wk","Rate/Unit","Unit"]
+                df_disp    = df_results[disp_cols].copy()
+                df_disp["Labor Cost"]       = df_disp["Labor Cost"].apply(lambda x: f"${x:,.0f}")
+                df_disp["Est. Revenue"]     = df_disp["Est. Revenue"].apply(lambda x: f"${x:,.0f}")
+                df_disp["Net Contribution"] = df_disp["Net Contribution"].apply(lambda x: f"${x:,.0f}")
+                df_disp["ROI %"]            = df_disp["ROI %"].apply(lambda x: f"{x:.1f}%")
+                df_disp["Rate/Unit"]        = df_disp["Rate/Unit"].apply(lambda x: f"${x:,.0f}")
+
+                st.dataframe(df_disp, use_container_width=True, hide_index=True)
+
+                st.markdown("---")
+                st.markdown("#### Revenue vs Labor Cost by Provider")
+
+                fig = go.Figure()
+                providers_list = [r["Provider"] for r in results]
+                costs  = [r["Labor Cost"]  for r in results]
+                revs   = [r["Est. Revenue"] for r in results]
+
+                fig.add_trace(go.Bar(
+                    name="Labor Cost", x=providers_list, y=costs,
+                    marker_color="#ef4444", opacity=0.85
+                ))
+                fig.add_trace(go.Bar(
+                    name="Est. Revenue", x=providers_list, y=revs,
+                    marker_color="#10b981", opacity=0.85
+                ))
+                fig.update_layout(
+                    barmode="group",
+                    height=350,
+                    margin=dict(l=20,r=20,t=20,b=20),
+                    legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+                    plot_bgcolor="#f8fafc",
+                    paper_bgcolor="#f8fafc",
+                    yaxis=dict(tickprefix="$", gridcolor="#e2e8f0"),
+                    xaxis=dict(gridcolor="#e2e8f0"),
+                )
+                st.plotly_chart(fig, use_container_width=True)
+
+                # Methodology note
+                st.markdown(
+                    '<div style="background:#f1f5f9;border-radius:8px;padding:12px 16px;'
+                    'font-size:0.75rem;color:#64748b;margin-top:8px;">'
+                    '<strong>Methodology:</strong> Labor cost = actual invoiced spend from the Spend Tracker '
+                    'for the selected period. Estimated revenue = weekly volume × reimbursement rate × weeks '
+                    'in period. Reimbursement rates are CMS-sourced benchmarks from DiagnOS '
+                    '(HST Pathways 2024, CMS RVU-based blended net collections, MGMA 2024, Medscape 2025). '
+                    'Override rates with RMCHCS actual payer data for maximum accuracy. '
+                    'Net contribution = estimated revenue minus labor cost. '
+                    'Program ROI = net contribution ÷ labor cost.'
+                    '</div>',
+                    unsafe_allow_html=True
+                )
+
+
 elif page == "─────────────":
     st.info("Select a section from the sidebar.")
