@@ -3046,10 +3046,14 @@ elif page == "Program ROI":
                     story.append(Spacer(1,14))
 
                     # Program chart
+                    import tempfile, os as _os
                     story.append(h2("Program Cost vs Revenue"))
                     story.append(Spacer(1,6))
                     chart_buf = make_chart_img(6.0, 2.8)
-                    story.append(RLImage(ImageReader(chart_buf), width=W, height=W*0.43))
+                    with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as _tf:
+                        _tf.write(chart_buf.read())
+                        _chart_path = _tf.name
+                    story.append(RLImage(_chart_path, width=W, height=W*0.43))
                     story.append(Spacer(1,12))
 
                     # Provider chart
@@ -3058,7 +3062,10 @@ elif page == "Program ROI":
                         story.append(Spacer(1,6))
                         prov_chart = make_provider_chart(6.0, 2.8)
                         if prov_chart:
-                            story.append(RLImage(ImageReader(prov_chart), width=W, height=W*0.43))
+                            with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as _tf2:
+                                _tf2.write(prov_chart.read())
+                                _prov_chart_path = _tf2.name
+                            story.append(RLImage(_prov_chart_path, width=W, height=W*0.43))
                         story.append(Spacer(1,12))
 
                     # Revenue provider detail table
@@ -3126,6 +3133,12 @@ elif page == "Program ROI":
                         leftMargin=0.75*inch, rightMargin=0.75*inch,
                         topMargin=1.2*inch, bottomMargin=0.9*inch)
                     doc2.build(story, onFirstPage=on_page, onLaterPages=on_page)
+                    # Clean up temp image files
+                    try:
+                        if '_chart_path' in dir(): _os.unlink(_chart_path)
+                        if '_prov_chart_path' in dir(): _os.unlink(_prov_chart_path)
+                    except Exception:
+                        pass
                     buf2.seek(0)
                     return buf2.read()
 
