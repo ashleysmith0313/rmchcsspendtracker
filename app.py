@@ -2646,6 +2646,500 @@ elif page == "Program ROI":
                 st.plotly_chart(fig, use_container_width=True)
 
                 # Methodology note
+                # ── Export buttons ────────────────────────────────────────────────
+                st.markdown("---")
+                st.markdown("#### Export Reports")
+                ex1, ex2, _ = st.columns([1,1,3])
+
+                # ── Build exec brief PDF ──────────────────────────────────────────
+                def build_roi_exec_brief(total_cost, total_rev, total_net, prog_roi,
+                                          results, cost_only_results, unmatched_spend,
+                                          start_date, end_date, period_weeks):
+                    import io as _io
+                    from reportlab.lib.pagesizes import letter
+                    from reportlab.lib import colors
+                    from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+                    from reportlab.lib.units import inch
+                    from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, HRFlowable
+                    from datetime import date as _date
+
+                    NAVY  = colors.HexColor("#283652")
+                    RED   = colors.HexColor("#DD4F20")
+                    WHITE = colors.white
+                    LGRAY = colors.HexColor("#F1ECE9")
+                    MGRAY = colors.HexColor("#B3B5B0")
+                    GREEN = colors.HexColor("#065F46")
+                    MUTED = colors.HexColor("#6B7280")
+                    GREENBG = colors.HexColor("#ECFDF5")
+                    W = 7.0 * inch
+
+                    def fmt(v):  return f"${v:,.0f}"
+                    def abbrev(v):
+                        if abs(v) >= 1_000_000: return f"${v/1_000_000:.1f}M"
+                        if abs(v) >= 1_000:     return f"${v/1_000:.0f}K"
+                        return fmt(v)
+
+                    def on_page(canvas, doc):
+                        canvas.saveState()
+                        pw, ph = letter
+                        m = 0.65 * inch
+                        canvas.setFillColor(NAVY)
+                        canvas.rect(0, ph - 0.75*inch, pw, 0.75*inch, fill=1, stroke=0)
+                        canvas.setFillColor(RED)
+                        canvas.rect(0, 0, 0.10*inch, ph, fill=1, stroke=0)
+                        canvas.setFont("Helvetica-Bold", 10)
+                        canvas.setFillColor(WHITE)
+                        canvas.drawRightString(pw - m, ph - 0.30*inch, "RMCHCS ITO Program  |  Executive Brief")
+                        canvas.setFont("Helvetica", 8)
+                        canvas.setFillColor(colors.HexColor("#A8C4D4"))
+                        canvas.drawRightString(pw - m, ph - 0.48*inch,
+                            f"Ingenovis Health  |  {start_date.strftime('%b %d, %Y')} – {end_date.strftime('%b %d, %Y')}  |  {_date.today().strftime('%B %d, %Y')}")
+                        canvas.setStrokeColor(RED)
+                        canvas.setLineWidth(1.0)
+                        canvas.line(m, 0.58*inch, pw - m, 0.58*inch)
+                        canvas.setFont("Helvetica", 7)
+                        canvas.setFillColor(MUTED)
+                        canvas.drawString(m, 0.42*inch, "Confidential  |  Ingenovis Health ITO")
+                        canvas.drawRightString(pw - m, 0.42*inch, "Revenue figures are estimated benchmarks — validate with RMCHCS actual payer data")
+                        canvas.restoreState()
+
+                    sty = getSampleStyleSheet()
+                    def ps(name, fn="Helvetica", fs=9, ld=13, tc=None, **kw):
+                        return ParagraphStyle(name, parent=sty["Normal"], fontName=fn,
+                                              fontSize=fs, leading=ld,
+                                              textColor=tc if tc is not None else colors.HexColor("#1A1A2E"), **kw)
+                    def hr(c=NAVY, t=0.75): return HRFlowable(width="100%", thickness=t, color=c, spaceAfter=5, spaceBefore=3)
+                    def sec(text): return Paragraph(f"<b>{text.upper()}</b>",
+                                    ps("s", fn="Helvetica-Bold", fs=8, tc=RED, ld=10, spaceBefore=5, spaceAfter=2))
+
+                    roi_c  = GREEN if prog_roi >= 0 else RED
+                    roi_bg = GREENBG if prog_roi >= 0 else colors.HexColor("#FDEDEC")
+
+                    # Snapshot cards
+                    def stat_row(cards):
+                        n, cw = len(cards), W / len(cards)
+                        hr_ = [Paragraph(f"<b>{lbl}</b>", ps(f"h{i}", fn="Helvetica-Bold", fs=8, tc=WHITE, alignment=1))
+                               for i,(v,lbl,ac) in enumerate(cards)]
+                        vr  = [Paragraph(f"<b>{v}</b>", ps(f"v{i}", fn="Helvetica-Bold", fs=18, tc=ac, alignment=1, ld=22))
+                               for i,(v,lbl,ac) in enumerate(cards)]
+                        th = Table([hr_], colWidths=[cw]*n)
+                        th.setStyle(TableStyle([("BACKGROUND",(0,0),(-1,-1),NAVY),
+                            ("TOPPADDING",(0,0),(-1,-1),4),("BOTTOMPADDING",(0,0),(-1,-1),4),
+                            ("LEFTPADDING",(0,0),(-1,-1),4),("RIGHTPADDING",(0,0),(-1,-1),4),
+                            ("LINEAFTER",(0,0),(-2,-1),0.5,colors.HexColor("#415B80"))]))
+                        tb = Table([vr], colWidths=[cw]*n)
+                        tb.setStyle(TableStyle([("BACKGROUND",(0,0),(-1,-1),LGRAY),
+                            ("TOPPADDING",(0,0),(-1,-1),5),("BOTTOMPADDING",(0,0),(-1,-1),5),
+                            ("LEFTPADDING",(0,0),(-1,-1),4),("RIGHTPADDING",(0,0),(-1,-1),4),
+                            ("LINEAFTER",(0,0),(-2,-1),0.5,MGRAY),
+                            ("LINEBEFORE",(0,0),(0,-1),0.5,MGRAY),
+                            ("LINEAFTER",(-1,0),(-1,-1),0.5,MGRAY),
+                            ("LINEBELOW",(0,-1),(-1,-1),0.5,MGRAY)]))
+                        return [th, tb]
+
+                    story = []
+
+                    # Title
+                    story.append(Paragraph("RMCHCS ITO Program", ps("t", fn="Helvetica-Bold", fs=18, tc=NAVY, ld=22, spaceBefore=4)))
+                    story.append(Paragraph("Program ROI — Executive Brief",
+                        ps("sub", fs=11, tc=colors.HexColor("#415B80"), ld=14, spaceAfter=4)))
+                    story.append(Paragraph(
+                        f"Analysis period: {start_date.strftime('%B %d, %Y')} – {end_date.strftime('%B %d, %Y')}  ({period_weeks:.1f} weeks)  |  Ingenovis Health ITO",
+                        ps("meta", fs=8, tc=MUTED, spaceAfter=8)))
+                    story.append(HRFlowable(width="100%", thickness=2.0, color=RED, spaceAfter=10))
+
+                    # Snapshot cards
+                    snap = [
+                        (abbrev(total_cost),  "True Total Cost",     RED),
+                        (abbrev(total_rev),   "Estimated Revenue",   NAVY),
+                        (abbrev(total_net),   "Net Contribution",    GREEN if total_net >= 0 else RED),
+                        (f"{prog_roi:.1f}%",  "Program ROI",         GREEN if prog_roi >= 0 else RED),
+                    ]
+                    for item in stat_row(snap): story.append(item)
+                    story.append(Spacer(1, 10))
+
+                    # ROI headline
+                    story.append(Table([[Paragraph(
+                        f"<b>The RMCHCS ITO program generated an estimated {abbrev(total_net)} net contribution "
+                        f"on {abbrev(total_cost)} in total labor cost — a {prog_roi:.1f}% program ROI.</b>",
+                        ps("roi", tc=roi_c, ld=13))]],
+                        colWidths=[W],
+                        style=TableStyle([("BACKGROUND",(0,0),(-1,-1),roi_bg),
+                            ("TOPPADDING",(0,0),(-1,-1),8),("BOTTOMPADDING",(0,0),(-1,-1),8),
+                            ("LEFTPADDING",(0,0),(-1,-1),10),
+                            ("LINEABOVE",(0,0),(-1,0),2.0,roi_c)])))
+                    story.append(Spacer(1, 10))
+
+                    # Revenue provider table
+                    story.append(sec("Revenue Providers (MD / APP)"))
+                    story.append(hr())
+                    rev_rows = [["Provider","Specialty","Labor Cost","Est. Revenue","Net Contribution","ROI %"]]
+                    for r in results:
+                        roi_str = f"{r['ROI %']:.1f}%" if isinstance(r['ROI %'], (int,float)) else str(r['ROI %'])
+                        rev_rows.append([r["Provider"], r["Specialty"],
+                                          fmt(r["Labor Cost"]), fmt(r["Est. Revenue"]),
+                                          fmt(r["Net Contribution"]), roi_str])
+                    t_rev = Table(rev_rows, colWidths=[1.4*inch,1.5*inch,0.95*inch,0.95*inch,1.1*inch,0.7*inch])
+                    t_rev.setStyle(TableStyle([
+                        ("BACKGROUND",(0,0),(-1,0),NAVY),("TEXTCOLOR",(0,0),(-1,0),WHITE),
+                        ("FONTNAME",(0,0),(-1,0),"Helvetica-Bold"),("FONTSIZE",(0,0),(-1,0),8),
+                        ("ROWBACKGROUNDS",(0,1),(-1,-1),[WHITE,LGRAY]),
+                        ("FONTNAME",(0,1),(-1,-1),"Helvetica"),("FONTSIZE",(0,1),(-1,-1),8),
+                        ("GRID",(0,0),(-1,-1),0.25,MGRAY),
+                        ("TOPPADDING",(0,0),(-1,-1),4),("BOTTOMPADDING",(0,0),(-1,-1),4),
+                        ("LEFTPADDING",(0,0),(-1,-1),6),("RIGHTPADDING",(0,0),(-1,-1),6),
+                        ("ALIGN",(2,0),(-1,-1),"RIGHT"),
+                    ]))
+                    story.append(t_rev)
+                    story.append(Spacer(1, 10))
+
+                    # Cost-only table
+                    if cost_only_results or unmatched_spend > 0:
+                        story.append(sec("Cost-Only Providers (Nursing / Allied Health)"))
+                        story.append(hr())
+                        cost_rows = [["Provider","Discipline","Labor Cost","Note"]]
+                        for cr in cost_only_results:
+                            cost_rows.append([cr["provider"], cr["discipline"], fmt(cr["labor_cost"]), "Cost line only"])
+                        if unmatched_spend > 0:
+                            cost_rows.append(["Other / Unmatched","—",fmt(unmatched_spend),"Not matched to placed provider"])
+                        t_cost = Table(cost_rows, colWidths=[1.6*inch,1.2*inch,1.0*inch,2.85*inch])
+                        t_cost.setStyle(TableStyle([
+                            ("BACKGROUND",(0,0),(-1,0),NAVY),("TEXTCOLOR",(0,0),(-1,0),WHITE),
+                            ("FONTNAME",(0,0),(-1,0),"Helvetica-Bold"),("FONTSIZE",(0,0),(-1,0),8),
+                            ("ROWBACKGROUNDS",(0,1),(-1,-1),[WHITE,LGRAY]),
+                            ("FONTNAME",(0,1),(-1,-1),"Helvetica"),("FONTSIZE",(0,1),(-1,-1),8),
+                            ("GRID",(0,0),(-1,-1),0.25,MGRAY),
+                            ("TOPPADDING",(0,0),(-1,-1),4),("BOTTOMPADDING",(0,0),(-1,-1),4),
+                            ("LEFTPADDING",(0,0),(-1,-1),6),("RIGHTPADDING",(0,0),(-1,-1),6),
+                            ("ALIGN",(2,0),(2,-1),"RIGHT"),
+                        ]))
+                        story.append(t_cost)
+                        story.append(Spacer(1, 10))
+
+                    # Methodology
+                    story.append(sec("Methodology"))
+                    story.append(hr())
+                    story.append(Paragraph(
+                        "Labor cost: actual invoiced spend from the RMCHCS Spend Tracker for the selected period. "
+                        "Estimated revenue: weekly volume × reimbursement rate × weeks in period. "
+                        "Reimbursement rates sourced from DiagnOS benchmarks (HST Pathways 2024 ASC Report; "
+                        "CMS RVU-based blended net collections; MGMA 2024; Medscape 2025). "
+                        "Override rates with RMCHCS actual payer data for maximum accuracy. "
+                        "Net contribution = estimated revenue minus total labor cost (including all disciplines). "
+                        "Program ROI = net contribution ÷ true total cost.",
+                        ps("m", fs=8, tc=MUTED, ld=11)))
+
+                    buf2 = _io.BytesIO()
+                    doc2 = SimpleDocTemplate(buf2, pagesize=letter,
+                        leftMargin=0.65*inch, rightMargin=0.60*inch,
+                        topMargin=0.88*inch, bottomMargin=0.68*inch)
+                    doc2.build(story, onFirstPage=on_page, onLaterPages=on_page)
+                    buf2.seek(0)
+                    return buf2.read()
+
+                # ── Build detailed PDF with charts ────────────────────────────────
+                def build_roi_detailed_pdf(total_cost, total_rev, total_net, prog_roi,
+                                            results, cost_only_results, unmatched_spend,
+                                            start_date, end_date, period_weeks):
+                    import io as _io
+                    from reportlab.lib.pagesizes import letter
+                    from reportlab.lib import colors
+                    from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+                    from reportlab.lib.units import inch
+                    from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, HRFlowable, Image as RLImage
+                    from reportlab.lib.utils import ImageReader
+                    from datetime import date as _date
+                    import matplotlib
+                    matplotlib.use("Agg")
+                    import matplotlib.pyplot as plt
+                    import matplotlib.patches as mpatches
+                    import numpy as np
+
+                    NAVY  = colors.HexColor("#283652")
+                    RED   = colors.HexColor("#DD4F20")
+                    WHITE = colors.white
+                    LGRAY = colors.HexColor("#F1ECE9")
+                    MGRAY = colors.HexColor("#B3B5B0")
+                    GREEN = colors.HexColor("#065F46")
+                    MUTED = colors.HexColor("#6B7280")
+                    GREENBG = colors.HexColor("#ECFDF5")
+                    W = 6.5 * inch
+
+                    def fmt(v):  return f"${v:,.0f}"
+                    def abbrev(v):
+                        if abs(v) >= 1_000_000: return f"${v/1_000_000:.1f}M"
+                        if abs(v) >= 1_000:     return f"${v/1_000:.0f}K"
+                        return fmt(v)
+
+                    def on_page(canvas, doc):
+                        canvas.saveState()
+                        pw, ph = letter
+                        m = 0.75 * inch
+                        canvas.setFillColor(NAVY)
+                        canvas.rect(0, ph - 1.0*inch, pw, 1.0*inch, fill=1, stroke=0)
+                        canvas.setFont("Helvetica-Bold", 11)
+                        canvas.setFillColor(WHITE)
+                        canvas.drawString(m, ph - 0.38*inch, "RMCHCS ITO Program")
+                        canvas.setFont("Helvetica", 8)
+                        canvas.setFillColor(colors.HexColor("#A8C4D4"))
+                        canvas.drawString(m, ph - 0.58*inch,
+                            f"Program ROI Report  |  {start_date.strftime('%b %d, %Y')} – {end_date.strftime('%b %d, %Y')}  |  Ingenovis Health")
+                        canvas.drawRightString(pw - m, ph - 0.58*inch, f"Generated {_date.today().strftime('%B %d, %Y')}")
+                        canvas.setStrokeColor(RED)
+                        canvas.setLineWidth(1.5)
+                        canvas.line(m, ph - 1.05*inch, pw - m, ph - 1.05*inch)
+                        canvas.setStrokeColor(NAVY)
+                        canvas.setLineWidth(0.5)
+                        canvas.line(m, 0.62*inch, pw - m, 0.62*inch)
+                        canvas.setFont("Helvetica", 7)
+                        canvas.setFillColor(colors.HexColor("#777777"))
+                        canvas.drawString(m, 0.44*inch, "Confidential  |  Ingenovis Health ITO  |  Revenue figures are estimated benchmarks")
+                        canvas.drawRightString(pw - m, 0.44*inch, f"Page {doc.page}")
+                        canvas.restoreState()
+
+                    sty = getSampleStyleSheet()
+                    def ps(name, fn="Helvetica", fs=9, ld=13, tc=None, **kw):
+                        return ParagraphStyle(name, parent=sty["Normal"], fontName=fn,
+                                              fontSize=fs, leading=ld,
+                                              textColor=tc if tc is not None else colors.HexColor("#1A1A2E"), **kw)
+                    def hr(c=NAVY, t=1.0): return HRFlowable(width="100%", thickness=t, color=c, spaceAfter=6, spaceBefore=4)
+
+                    def h2(text):
+                        inner = Table([[Paragraph(text, ps("h2i", fn="Helvetica-Bold", fs=10, tc=NAVY, leading=14, leftIndent=8))]],
+                                       colWidths=[W])
+                        inner.setStyle(TableStyle([
+                            ("BACKGROUND",(0,0),(-1,-1),LGRAY),
+                            ("LINEBEFORE",(0,0),(0,-1),3,NAVY),
+                            ("TOPPADDING",(0,0),(-1,-1),6),("BOTTOMPADDING",(0,0),(-1,-1),6),
+                            ("LEFTPADDING",(0,0),(-1,-1),10),("RIGHTPADDING",(0,0),(-1,-1),8),
+                        ]))
+                        return inner
+
+                    def T(data, cw=None):
+                        if cw is None: cw = [W*0.5, W*0.5]
+                        t = Table(data, colWidths=cw)
+                        t.setStyle(TableStyle([
+                            ("BACKGROUND",(0,0),(-1,0),NAVY),("TEXTCOLOR",(0,0),(-1,0),WHITE),
+                            ("FONTNAME",(0,0),(-1,0),"Helvetica-Bold"),("FONTSIZE",(0,0),(-1,0),9),
+                            ("ROWBACKGROUNDS",(0,1),(-1,-1),[WHITE,LGRAY]),
+                            ("FONTNAME",(0,1),(-1,-1),"Helvetica"),("FONTSIZE",(0,1),(-1,-1),9),
+                            ("TEXTCOLOR",(0,1),(-1,-1),colors.HexColor("#222222")),
+                            ("ALIGN",(1,0),(1,-1),"RIGHT"),
+                            ("GRID",(0,0),(-1,-1),0.25,MGRAY),
+                            ("TOPPADDING",(0,0),(-1,-1),5),("BOTTOMPADDING",(0,0),(-1,-1),5),
+                            ("LEFTPADDING",(0,0),(-1,-1),8),("RIGHTPADDING",(0,0),(-1,-1),8),
+                        ]))
+                        return t
+
+                    def make_chart_img(width_in, height_in):
+                        """Program-level cost vs revenue bar chart."""
+                        fig, ax = plt.subplots(figsize=(width_in, height_in))
+                        labels = ["Total Labor Cost", "Estimated Revenue"]
+                        vals   = [total_cost, total_rev]
+                        bar_colors = ["#ef4444", "#10b981"]
+                        bars = ax.bar(labels, vals, color=bar_colors, width=0.45, edgecolor="white")
+                        for bar, val in zip(bars, vals):
+                            ax.text(bar.get_x() + bar.get_width()/2, bar.get_height() + max(vals)*0.01,
+                                    abbrev(val), ha="center", va="bottom", fontsize=9, fontweight="bold",
+                                    color="#1a1a2e")
+                        ax.set_facecolor("#f8fafc")
+                        fig.patch.set_facecolor("#f8fafc")
+                        ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda x,_: abbrev(x)))
+                        ax.spines["top"].set_visible(False)
+                        ax.spines["right"].set_visible(False)
+                        ax.set_title("Program: Total Cost vs Estimated Revenue", fontsize=10,
+                                     fontweight="bold", color="#283652", pad=8)
+                        plt.tight_layout()
+                        img_buf = _io.BytesIO()
+                        plt.savefig(img_buf, format="png", dpi=150, bbox_inches="tight",
+                                    facecolor="#f8fafc")
+                        plt.close()
+                        img_buf.seek(0)
+                        return img_buf
+
+                    def make_provider_chart(width_in, height_in):
+                        """Per-provider cost vs revenue."""
+                        if not results:
+                            return None
+                        pnames  = [r["Provider"] for r in results]
+                        costs_v = [r["Labor Cost"] for r in results]
+                        revs_v  = [r["Est. Revenue"] for r in results]
+                        x = np.arange(len(pnames))
+                        w = 0.35
+                        fig, ax = plt.subplots(figsize=(width_in, height_in))
+                        b1 = ax.bar(x - w/2, costs_v, w, label="Labor Cost", color="#ef4444", edgecolor="white")
+                        b2 = ax.bar(x + w/2, revs_v,  w, label="Est. Revenue", color="#10b981", edgecolor="white")
+                        ax.set_xticks(x)
+                        ax.set_xticklabels(pnames, fontsize=8)
+                        ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda x,_: abbrev(x)))
+                        ax.set_facecolor("#f8fafc")
+                        fig.patch.set_facecolor("#f8fafc")
+                        ax.spines["top"].set_visible(False)
+                        ax.spines["right"].set_visible(False)
+                        ax.legend(fontsize=8)
+                        ax.set_title("Revenue vs Labor Cost by MD/APP Provider", fontsize=10,
+                                     fontweight="bold", color="#283652", pad=8)
+                        plt.tight_layout()
+                        img_buf = _io.BytesIO()
+                        plt.savefig(img_buf, format="png", dpi=150, bbox_inches="tight", facecolor="#f8fafc")
+                        plt.close()
+                        img_buf.seek(0)
+                        return img_buf
+
+                    roi_c  = GREEN if prog_roi >= 0 else RED
+                    roi_bg = GREENBG if prog_roi >= 0 else colors.HexColor("#FDEDEC")
+
+                    story = []
+
+                    # Title block
+                    story.append(Paragraph("RMCHCS ITO Program", ps("t", fn="Helvetica-Bold", fs=20, tc=NAVY, ld=24, spaceBefore=2)))
+                    story.append(Paragraph("Program ROI — Detailed Report",
+                        ps("sub", fs=12, tc=colors.HexColor("#415B80"), ld=15, spaceAfter=3)))
+                    story.append(Paragraph(
+                        f"Period: {start_date.strftime('%B %d, %Y')} – {end_date.strftime('%B %d, %Y')}  ({period_weeks:.1f} weeks)  |  Ingenovis Health ITO  |  Generated {_date.today().strftime('%B %d, %Y')}",
+                        ps("meta", fs=8, tc=MUTED, spaceAfter=8)))
+                    story.append(HRFlowable(width="100%", thickness=2.0, color=RED, spaceAfter=12))
+
+                    # Program summary table
+                    story.append(h2("Program Summary"))
+                    story.append(Spacer(1,6))
+                    story.append(T([
+                        ["Metric","Value"],
+                        ["Analysis Period", f"{start_date.strftime('%b %d, %Y')} – {end_date.strftime('%b %d, %Y')} ({period_weeks:.1f} wks)"],
+                        ["True Total Labor Cost", fmt(total_cost)],
+                        ["Estimated Revenue Generated", fmt(total_rev)],
+                        ["Net Contribution", fmt(total_net)],
+                        ["Program ROI", f"{prog_roi:.1f}%"],
+                        ["Revenue Providers", str(len(results))],
+                    ], cw=[W*0.55, W*0.45]))
+                    story.append(Spacer(1,8))
+
+                    # ROI headline box
+                    story.append(Table([[Paragraph(
+                        f"<b>{prog_roi:.1f}% Program ROI</b> — The RMCHCS ITO program generated an estimated "
+                        f"{abbrev(total_net)} net contribution on {abbrev(total_cost)} in total labor cost "
+                        f"over the {period_weeks:.1f}-week analysis period.",
+                        ps("roi", tc=roi_c, ld=13))]],
+                        colWidths=[W],
+                        style=TableStyle([("BACKGROUND",(0,0),(-1,-1),roi_bg),
+                            ("TOPPADDING",(0,0),(-1,-1),8),("BOTTOMPADDING",(0,0),(-1,-1),8),
+                            ("LEFTPADDING",(0,0),(-1,-1),10),
+                            ("LINEABOVE",(0,0),(-1,0),2.5,roi_c)])))
+                    story.append(Spacer(1,14))
+
+                    # Program chart
+                    story.append(h2("Program Cost vs Revenue"))
+                    story.append(Spacer(1,6))
+                    chart_buf = make_chart_img(6.0, 2.8)
+                    story.append(RLImage(ImageReader(chart_buf), width=W, height=W*0.43))
+                    story.append(Spacer(1,12))
+
+                    # Provider chart
+                    if results:
+                        story.append(h2("Revenue vs Cost by Provider (MD / APP)"))
+                        story.append(Spacer(1,6))
+                        prov_chart = make_provider_chart(6.0, 2.8)
+                        if prov_chart:
+                            story.append(RLImage(ImageReader(prov_chart), width=W, height=W*0.43))
+                        story.append(Spacer(1,12))
+
+                    # Revenue provider detail table
+                    story.append(h2("Revenue Provider Detail"))
+                    story.append(Spacer(1,6))
+                    rev_rows = [["Provider","Specialty","Labor Cost","Est. Revenue","Net Contribution","ROI %","Units/Wk","Rate/Unit"]]
+                    for r in results:
+                        roi_str = f"{r['ROI %']:.1f}%" if isinstance(r["ROI %"], (int,float)) else str(r["ROI %"])
+                        rev_rows.append([r["Provider"], r["Specialty"],
+                                          fmt(r["Labor Cost"]), fmt(r["Est. Revenue"]),
+                                          fmt(r["Net Contribution"]), roi_str,
+                                          str(int(r["Units/Wk"])), fmt(r["Rate/Unit"])])
+                    t_rev = Table(rev_rows, colWidths=[1.1*inch,1.15*inch,0.8*inch,0.8*inch,0.9*inch,0.55*inch,0.6*inch,0.6*inch])
+                    t_rev.setStyle(TableStyle([
+                        ("BACKGROUND",(0,0),(-1,0),NAVY),("TEXTCOLOR",(0,0),(-1,0),WHITE),
+                        ("FONTNAME",(0,0),(-1,0),"Helvetica-Bold"),("FONTSIZE",(0,0),(-1,0),7.5),
+                        ("ROWBACKGROUNDS",(0,1),(-1,-1),[WHITE,LGRAY]),
+                        ("FONTNAME",(0,1),(-1,-1),"Helvetica"),("FONTSIZE",(0,1),(-1,-1),8),
+                        ("GRID",(0,0),(-1,-1),0.25,MGRAY),
+                        ("TOPPADDING",(0,0),(-1,-1),4),("BOTTOMPADDING",(0,0),(-1,-1),4),
+                        ("LEFTPADDING",(0,0),(-1,-1),5),("RIGHTPADDING",(0,0),(-1,-1),5),
+                        ("ALIGN",(2,0),(-1,-1),"RIGHT"),
+                    ]))
+                    story.append(t_rev)
+                    story.append(Spacer(1,10))
+
+                    # Cost-only table
+                    if cost_only_results or unmatched_spend > 0:
+                        story.append(h2("Cost-Only Providers (Nursing / Allied Health)"))
+                        story.append(Spacer(1,6))
+                        cost_rows = [["Provider","Discipline","Labor Cost","Note"]]
+                        for cr in cost_only_results:
+                            cost_rows.append([cr["provider"], cr["discipline"], fmt(cr["labor_cost"]), "Cost line only — no revenue attribution"])
+                        if unmatched_spend > 0:
+                            cost_rows.append(["Other / Unmatched","—",fmt(unmatched_spend),"Logged spend not matched to placed provider"])
+                        t_cost = Table(cost_rows, colWidths=[1.5*inch,1.1*inch,0.9*inch,3.0*inch])
+                        t_cost.setStyle(TableStyle([
+                            ("BACKGROUND",(0,0),(-1,0),NAVY),("TEXTCOLOR",(0,0),(-1,0),WHITE),
+                            ("FONTNAME",(0,0),(-1,0),"Helvetica-Bold"),("FONTSIZE",(0,0),(-1,0),8),
+                            ("ROWBACKGROUNDS",(0,1),(-1,-1),[WHITE,LGRAY]),
+                            ("FONTNAME",(0,1),(-1,-1),"Helvetica"),("FONTSIZE",(0,1),(-1,-1),8),
+                            ("GRID",(0,0),(-1,-1),0.25,MGRAY),
+                            ("TOPPADDING",(0,0),(-1,-1),4),("BOTTOMPADDING",(0,0),(-1,-1),4),
+                            ("LEFTPADDING",(0,0),(-1,-1),6),("RIGHTPADDING",(0,0),(-1,-1),6),
+                            ("ALIGN",(2,0),(2,-1),"RIGHT"),
+                        ]))
+                        story.append(t_cost)
+                        story.append(Spacer(1,10))
+
+                    # Methodology
+                    story.append(h2("Methodology & Data Sources"))
+                    story.append(Spacer(1,6))
+                    story.append(Paragraph(
+                        "<b>Labor cost:</b> Actual invoiced spend from the RMCHCS Spend Tracker for the selected period. "
+                        "<b>Estimated revenue:</b> Weekly procedure/encounter volume × reimbursement rate × weeks in period. "
+                        "<b>Reimbursement rates:</b> DiagnOS benchmarks sourced from HST Pathways 2024 ASC State of the Industry Report (590 surgery centers, ~3M patient visits); "
+                        "CMS RVU-based blended net collections; MGMA 2024 Provider Compensation Data Report; Medscape 2025 Revenue & Compensation Report. "
+                        "Override with RMCHCS actual contracted payer rates for maximum accuracy. "
+                        "<b>Net contribution</b> = estimated revenue minus true total labor cost (all disciplines). "
+                        "<b>Program ROI</b> = net contribution ÷ true total cost.",
+                        ps("m", fs=8, tc=MUTED, ld=11)))
+
+                    buf2 = _io.BytesIO()
+                    doc2 = SimpleDocTemplate(buf2, pagesize=letter,
+                        leftMargin=0.75*inch, rightMargin=0.75*inch,
+                        topMargin=1.2*inch, bottomMargin=0.9*inch)
+                    doc2.build(story, onFirstPage=on_page, onLaterPages=on_page)
+                    buf2.seek(0)
+                    return buf2.read()
+
+                # ── Download buttons ──────────────────────────────────────────────
+                with ex1:
+                    exec_pdf = build_roi_exec_brief(
+                        true_total_cost, total_rev, total_net, prog_roi,
+                        results, cost_only_results, unmatched_spend,
+                        start_date, end_date, period_weeks)
+                    st.download_button(
+                        "📄 Executive Brief",
+                        data=exec_pdf,
+                        file_name=f"RMCHCS_ITO_Executive_Brief_{date.today().strftime('%Y%m%d')}.pdf",
+                        mime="application/pdf",
+                        use_container_width=True,
+                        type="primary"
+                    )
+
+                with ex2:
+                    detailed_pdf = build_roi_detailed_pdf(
+                        true_total_cost, total_rev, total_net, prog_roi,
+                        results, cost_only_results, unmatched_spend,
+                        start_date, end_date, period_weeks)
+                    st.download_button(
+                        "📊 Detailed Report",
+                        data=detailed_pdf,
+                        file_name=f"RMCHCS_ITO_Detailed_Report_{date.today().strftime('%Y%m%d')}.pdf",
+                        mime="application/pdf",
+                        use_container_width=True,
+                        type="secondary"
+                    )
+
                 st.markdown(
                     '<div style="background:#f1f5f9;border-radius:8px;padding:12px 16px;'
                     'font-size:0.75rem;color:#64748b;margin-top:8px;">'
