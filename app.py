@@ -2515,7 +2515,7 @@ elif page == "Program ROI":
                 })
 
             # Unmatched spend — any spend log entries not matched to a known provider
-            matched_names = [r["provider"] for r in results] + cost_only_names
+            matched_names = [r["Provider"] for r in results] + cost_only_names
             if not spend_filtered.empty and "provider_name" in spend_filtered.columns:
                 def _is_matched(pn):
                     pn_lower = str(pn).lower()
