@@ -2605,45 +2605,59 @@ elif page == "Program ROI":
                     st.dataframe(pd.DataFrame(cost_rows), use_container_width=True, hide_index=True)
 
                 st.markdown("---")
-                st.markdown("#### Revenue vs Cost by Provider")
+                st.markdown("#### Program Financials")
 
-                # Chart: revenue providers only for revenue bars; all for cost
-                fig = go.Figure()
-                providers_list = [r["Provider"] for r in results]
-                md_costs  = [r["Labor Cost"]   for r in results]
-                revs      = [r["Est. Revenue"] for r in results]
+                ch1, ch2 = st.columns(2)
 
-                fig.add_trace(go.Bar(
-                    name="Labor Cost", x=providers_list, y=md_costs,
-                    marker_color="#ef4444", opacity=0.85
-                ))
-                fig.add_trace(go.Bar(
-                    name="Est. Revenue", x=providers_list, y=revs,
-                    marker_color="#10b981", opacity=0.85
-                ))
+                # Left: program-level total cost vs total revenue
+                with ch1:
+                    st.markdown("**Program Total: Cost vs Revenue**")
+                    fig_prog = go.Figure()
+                    fig_prog.add_trace(go.Bar(
+                        x=["True Total Cost", "Estimated Revenue"],
+                        y=[true_total_cost, total_rev],
+                        marker_color=["#ef4444", "#10b981"],
+                        text=[f"${true_total_cost:,.0f}", f"${total_rev:,.0f}"],
+                        textposition="outside",
+                        showlegend=False,
+                    ))
+                    fig_prog.update_layout(
+                        height=320,
+                        margin=dict(l=10,r=10,t=10,b=10),
+                        plot_bgcolor="#f8fafc", paper_bgcolor="#f8fafc",
+                        yaxis=dict(tickprefix="$", gridcolor="#e2e8f0", showgrid=True),
+                        xaxis=dict(gridcolor="#e2e8f0"),
+                    )
+                    st.plotly_chart(fig_prog, use_container_width=True)
 
-                # Add cost-only as separate cost bars
-                for cr in cost_only_results:
-                    if cr["labor_cost"] > 0:
-                        fig.add_trace(go.Bar(
-                            name=cr["provider"],
-                            x=[cr["provider"]],
-                            y=[cr["labor_cost"]],
-                            marker_color="#f97316", opacity=0.85,
-                            showlegend=True,
+                # Right: per-provider cost vs revenue (MD/APP only)
+                with ch2:
+                    st.markdown("**MD / APP: Cost vs Revenue by Provider**")
+                    if results:
+                        fig_prov = go.Figure()
+                        providers_list = [r["Provider"] for r in results]
+                        md_costs = [r["Labor Cost"]   for r in results]
+                        revs     = [r["Est. Revenue"] for r in results]
+                        fig_prov.add_trace(go.Bar(
+                            name="Labor Cost", x=providers_list, y=md_costs,
+                            marker_color="#ef4444", opacity=0.85
                         ))
-
-                fig.update_layout(
-                    barmode="group",
-                    height=380,
-                    margin=dict(l=20,r=20,t=20,b=20),
-                    legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
-                    plot_bgcolor="#f8fafc",
-                    paper_bgcolor="#f8fafc",
-                    yaxis=dict(tickprefix="$", gridcolor="#e2e8f0"),
-                    xaxis=dict(gridcolor="#e2e8f0"),
-                )
-                st.plotly_chart(fig, use_container_width=True)
+                        fig_prov.add_trace(go.Bar(
+                            name="Est. Revenue", x=providers_list, y=revs,
+                            marker_color="#10b981", opacity=0.85
+                        ))
+                        fig_prov.update_layout(
+                            barmode="group",
+                            height=320,
+                            margin=dict(l=10,r=10,t=10,b=10),
+                            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+                            plot_bgcolor="#f8fafc", paper_bgcolor="#f8fafc",
+                            yaxis=dict(tickprefix="$", gridcolor="#e2e8f0"),
+                            xaxis=dict(gridcolor="#e2e8f0"),
+                        )
+                        st.plotly_chart(fig_prov, use_container_width=True)
+                    else:
+                        st.info("No MD/APP providers configured yet.")
 
                 # Methodology note
                 # ── Export buttons ────────────────────────────────────────────────
@@ -2905,11 +2919,15 @@ elif page == "Program ROI":
                     def hr(c=NAVY, t=1.0): return HRFlowable(width="100%", thickness=t, color=c, spaceAfter=6, spaceBefore=4)
 
                     def h2(text):
-                        inner = Table([[Paragraph(text, ps("h2i", fn="Helvetica-Bold", fs=10, tc=NAVY, leading=14, leftIndent=8))]],
-                                       colWidths=[W])
+                        _navy = colors.HexColor("#283652")
+                        _lgray = colors.HexColor("#F1ECE9")
+                        _h2style = ParagraphStyle("h2i", parent=sty["Normal"],
+                            fontName="Helvetica-Bold", fontSize=10,
+                            textColor=_navy, leading=14, leftIndent=8)
+                        inner = Table([[Paragraph(text, _h2style)]], colWidths=[W])
                         inner.setStyle(TableStyle([
-                            ("BACKGROUND",(0,0),(-1,-1),LGRAY),
-                            ("LINEBEFORE",(0,0),(0,-1),3,NAVY),
+                            ("BACKGROUND",(0,0),(-1,-1),_lgray),
+                            ("LINEBEFORE",(0,0),(0,-1),3,_navy),
                             ("TOPPADDING",(0,0),(-1,-1),6),("BOTTOMPADDING",(0,0),(-1,-1),6),
                             ("LEFTPADDING",(0,0),(-1,-1),10),("RIGHTPADDING",(0,0),(-1,-1),8),
                         ]))
