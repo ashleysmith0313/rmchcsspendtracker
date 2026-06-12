@@ -2489,14 +2489,58 @@ elif page == "Program ROI":
                     "Unit":              unit,
                 })
 
+            # ── Cost-only rows: nursing/allied spend from spend log ──────────────
+            cost_only_results = []
+            # Collect cost-only provider names (placed nursing/allied)
+            cost_only_names = []
+            if not cost_only_placed.empty and "candidate_name" in cost_only_placed.columns:
+                cost_only_names = cost_only_placed["candidate_name"].dropna().unique().tolist()
+
+            for cname in cost_only_names:
+                if not spend_filtered.empty and "provider_name" in spend_filtered.columns:
+                    c_spend = spend_filtered[
+                        spend_filtered["provider_name"].str.lower().str.contains(
+                            cname.split()[0].lower(), na=False)
+                    ]["total_spend"].sum()
+                else:
+                    c_spend = 0.0
+                disc = ""
+                if not cost_only_placed.empty and "discipline" in cost_only_placed.columns:
+                    disc_vals = cost_only_placed[cost_only_placed["candidate_name"]==cname]["discipline"].values
+                    disc = disc_vals[0] if len(disc_vals) > 0 else "Allied Health"
+                cost_only_results.append({
+                    "provider": cname,
+                    "discipline": disc,
+                    "labor_cost": c_spend,
+                })
+
+            # Unmatched spend — any spend log entries not matched to a known provider
+            matched_names = [r["provider"] for r in results] + cost_only_names
+            if not spend_filtered.empty and "provider_name" in spend_filtered.columns:
+                def _is_matched(pn):
+                    pn_lower = str(pn).lower()
+                    for mn in matched_names:
+                        if mn.split()[0].lower() in pn_lower:
+                            return True
+                    return False
+                unmatched_spend = spend_filtered[
+                    ~spend_filtered["provider_name"].apply(_is_matched)
+                ]["total_spend"].sum()
+            else:
+                unmatched_spend = 0.0
+
+            # True total cost = MD/APP matched + cost-only + unmatched
+            md_app_cost      = sum(r["Labor Cost"] for r in results)
+            cost_only_total  = sum(r["labor_cost"] for r in cost_only_results)
+            true_total_cost  = md_app_cost + cost_only_total + unmatched_spend
+
             if results:
                 st.markdown("---")
                 st.markdown("#### Program ROI Dashboard")
 
-                total_cost  = sum(r["Labor Cost"]       for r in results)
-                total_rev   = sum(r["Est. Revenue"]     for r in results)
-                total_net   = sum(r["Net Contribution"] for r in results)
-                prog_roi    = ((total_net / total_cost) * 100) if total_cost > 0 else 0.0
+                total_rev  = sum(r["Est. Revenue"]     for r in results)
+                total_net  = total_rev - true_total_cost
+                prog_roi   = ((total_net / true_total_cost) * 100) if true_total_cost > 0 else 0.0
 
                 # KPI cards
                 k1, k2, k3, k4 = st.columns(4)
@@ -2519,14 +2563,15 @@ elif page == "Program ROI":
                         f'{delta_html}'
                         f'</div>', unsafe_allow_html=True)
 
-                _kpi(k1, "Total Labor Cost",      total_cost)
-                _kpi(k2, "Estimated Revenue",     total_rev)
-                _kpi(k3, "Net Contribution",       total_net,  delta=prog_roi)
-                _kpi(k4, "Program ROI",            prog_roi, fmt="%")
+                _kpi(k1, "True Total Cost",    true_total_cost)
+                _kpi(k2, "Estimated Revenue",  total_rev)
+                _kpi(k3, "Net Contribution",   total_net,  delta=prog_roi)
+                _kpi(k4, "Program ROI",        prog_roi, fmt="%")
 
                 st.markdown("<div style='height:1rem'></div>", unsafe_allow_html=True)
 
-                # Provider breakdown table
+                # ── Provider breakdown table ──────────────────────────────────
+                st.markdown("**Revenue Providers (MD / APP)**")
                 df_results = pd.DataFrame(results)
                 disp_cols  = ["Provider","Specialty","Labor Cost","Est. Revenue","Net Contribution","ROI %","Units/Wk","Rate/Unit","Unit"]
                 df_disp    = df_results[disp_cols].copy()
@@ -2535,28 +2580,62 @@ elif page == "Program ROI":
                 df_disp["Net Contribution"] = df_disp["Net Contribution"].apply(lambda x: f"${x:,.0f}")
                 df_disp["ROI %"]            = df_disp["ROI %"].apply(lambda x: f"{x:.1f}%")
                 df_disp["Rate/Unit"]        = df_disp["Rate/Unit"].apply(lambda x: f"${x:,.0f}")
-
                 st.dataframe(df_disp, use_container_width=True, hide_index=True)
 
-                st.markdown("---")
-                st.markdown("#### Revenue vs Labor Cost by Provider")
+                # ── Cost-only providers ───────────────────────────────────────
+                if cost_only_results or unmatched_spend > 0:
+                    st.markdown("**Cost-Only Providers (Nursing / Allied Health)**")
+                    cost_rows = []
+                    for cr in cost_only_results:
+                        cost_rows.append({
+                            "Provider":   cr["provider"],
+                            "Discipline": cr["discipline"],
+                            "Labor Cost": f"${cr['labor_cost']:,.0f}",
+                            "Revenue":    "—",
+                            "Note":       "Cost line only — no revenue attribution",
+                        })
+                    if unmatched_spend > 0:
+                        cost_rows.append({
+                            "Provider":   "Other / Unmatched",
+                            "Discipline": "—",
+                            "Labor Cost": f"${unmatched_spend:,.0f}",
+                            "Revenue":    "—",
+                            "Note":       "Logged spend not matched to a placed provider",
+                        })
+                    st.dataframe(pd.DataFrame(cost_rows), use_container_width=True, hide_index=True)
 
+                st.markdown("---")
+                st.markdown("#### Revenue vs Cost by Provider")
+
+                # Chart: revenue providers only for revenue bars; all for cost
                 fig = go.Figure()
                 providers_list = [r["Provider"] for r in results]
-                costs  = [r["Labor Cost"]  for r in results]
-                revs   = [r["Est. Revenue"] for r in results]
+                md_costs  = [r["Labor Cost"]   for r in results]
+                revs      = [r["Est. Revenue"] for r in results]
 
                 fig.add_trace(go.Bar(
-                    name="Labor Cost", x=providers_list, y=costs,
+                    name="Labor Cost", x=providers_list, y=md_costs,
                     marker_color="#ef4444", opacity=0.85
                 ))
                 fig.add_trace(go.Bar(
                     name="Est. Revenue", x=providers_list, y=revs,
                     marker_color="#10b981", opacity=0.85
                 ))
+
+                # Add cost-only as separate cost bars
+                for cr in cost_only_results:
+                    if cr["labor_cost"] > 0:
+                        fig.add_trace(go.Bar(
+                            name=cr["provider"],
+                            x=[cr["provider"]],
+                            y=[cr["labor_cost"]],
+                            marker_color="#f97316", opacity=0.85,
+                            showlegend=True,
+                        ))
+
                 fig.update_layout(
                     barmode="group",
-                    height=350,
+                    height=380,
                     margin=dict(l=20,r=20,t=20,b=20),
                     legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
                     plot_bgcolor="#f8fafc",
