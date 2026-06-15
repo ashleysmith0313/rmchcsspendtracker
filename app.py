@@ -130,14 +130,17 @@ def load_candidates() -> pd.DataFrame:
     return pd.DataFrame(data)
 
 # Status option lists
-REQ_STATUSES  = ["Open","On Hold","Max Submissions","Filled","Closed"]
+REQ_STATUSES  = ["Open","On Hold","Max Submissions","Filled","Closed","Cancelled by Client"]
 CAND_STATUSES = ["Submitted","Clinical Call Scheduled","Clinical Call Complete",
-                  "Offered","Accepted","Declined by Candidate","Declined by Client",
-                  "Placed","Cancelled","Job Closed"]
+                  "Offered","Accepted","Placed","Active",
+                  "Declined by Candidate","Declined by Client","Cancelled by Client",
+                  "Cancelled","Job Closed"]
 
-# Statuses that are still "active" — candidates in these get auto-closed when req closes
+# Statuses that are still "in-pipeline" — auto-closed when req closes
 ACTIVE_CAND_STATUSES = {"Submitted","Clinical Call Scheduled","Clinical Call Complete",
                          "Offered","Accepted"}
+# Statuses that mean the provider is cleared and on assignment — drive ROI
+WORKING_STATUSES = {"Active"}
 CRED_STATUSES = ["Pending","Clear","Cancelled","Hold"]
 SOURCE_COS    = ["Vista","Springboard","Trustaff","Other IGV Brand","External"]
 DISCIPLINES   = ["Nursing","Allied Health","Physician","APP","Locums"]
@@ -1654,7 +1657,7 @@ elif page == "Pipeline Dashboard":
     total_reqs   = len(df_reqs)
     open_reqs    = len(df_reqs[df_reqs["status"]=="Open"]) if not df_reqs.empty else 0
     total_cands  = len(df_cands)
-    placed       = len(df_cands[df_cands["status"]=="Placed"]) if not df_cands.empty else 0
+    placed       = len(df_cands[df_cands["status"].isin(["Placed","Active"])]) if not df_cands.empty else 0
     active_pipe  = len(df_cands[df_cands["status"].isin(["Submitted","Clinical Call Scheduled",
                        "Clinical Call Complete","Offered","Accepted"])]) if not df_cands.empty else 0
     cred_due     = 0
@@ -1846,7 +1849,7 @@ elif page == "Requisitions":
                         _update_record(REQ_FILE, rec_id, updates)
                         saved += 1
                         # Cascade: any req saved as Closed or Filled floods active candidates to Job Closed
-                        if updates.get("status") in ("Closed", "Filled"):
+                        if updates.get("status") in ("Closed", "Filled", "Cancelled by Client"):
                             cands_data = _load(CANDIDATE_FILE)
                             changed = False
                             for c in cands_data:
@@ -2291,7 +2294,8 @@ elif page == "Program ROI":
     </div>""", unsafe_allow_html=True)
 
     # ── Pull placed providers from candidates + their spend ───────────────────
-    placed = df_cands[df_cands["status"] == "Placed"].copy() if not df_cands.empty else pd.DataFrame()
+    # Active = cleared and working = revenue generating; Placed = credentialing handoff
+    placed = df_cands[df_cands["status"] == "Active"].copy() if not df_cands.empty else pd.DataFrame()
 
     if placed.empty and df.empty:
         st.info("No placed candidates or logged spend yet. Place a candidate and log spend to see ROI.")
