@@ -2166,7 +2166,7 @@ elif page == "Credentialing":
     <div class="page-header">
         <div>
             <div class="page-header-title">Credentialing</div>
-            <div class="page-header-sub">Status across all active candidates</div>
+            <div class="page-header-sub">Linked to candidate status — Placed and Active providers only</div>
         </div>
     </div>""", unsafe_allow_html=True)
 
@@ -2174,41 +2174,77 @@ elif page == "Credentialing":
         st.info("No candidates yet.")
         st.stop()
 
-    cred_df = df_cands[df_cands["cred_company"].notna() & (df_cands["cred_company"] != "")].copy()               if "cred_company" in df_cands.columns else pd.DataFrame()
+    # Credentialing tracks Placed (in cred process) and Active (cleared, working)
+    # Terminal statuses are excluded — they are done or dead
+    CRED_STATUSES_TRACKED = {"Placed", "Active"}
+    TERMINAL_STATUSES     = {"Declined by Candidate","Declined by Client","Cancelled by Client",
+                              "Cancelled","Job Closed"}
+
+    # Primary view: candidates in Placed or Active status
+    cred_df = df_cands[df_cands["status"].isin(CRED_STATUSES_TRACKED)].copy()
+
+    # Also include anyone with cred data who isn't terminal (catch edge cases)
+    if "cred_company" in df_cands.columns:
+        has_cred_data = df_cands[
+            df_cands["cred_company"].notna() & (df_cands["cred_company"] != "") &
+            ~df_cands["status"].isin(TERMINAL_STATUSES)
+        ]
+        cred_df = pd.concat([cred_df, has_cred_data]).drop_duplicates(subset=["id"])
 
     if cred_df.empty:
-        st.info("No credentialing records yet. Add credentialing details from the Candidates page.")
+        st.info("No credentialing records yet. Move candidates to Placed status to begin tracking credentialing.")
         st.stop()
 
     today_str = date.today().isoformat()
 
-    # Flag overdue
     def cred_flag(row):
         if row.get("cred_status") in ["Clear","Cancelled"]: return "✅ Clear"
         if row.get("cred_due_date") and str(row.get("cred_due_date","")) <= today_str: return "🔴 Overdue"
         if row.get("cred_due_date"): return "🟡 Pending"
         return "⚪ No Date"
 
-    cred_df["flag"] = cred_df.apply(cred_flag, axis=1)
+    cred_df["_flag"] = cred_df.apply(cred_flag, axis=1)
 
-    # Summary
-    ck1,ck2,ck3,ck4 = st.columns(4)
-    ck1.metric("Total Credentialing", len(cred_df))
-    ck2.metric("Clear",    len(cred_df[cred_df["flag"]=="✅ Clear"]))
-    ck3.metric("Pending",  len(cred_df[cred_df["flag"]=="🟡 Pending"]))
-    ck4.metric("Overdue",  len(cred_df[cred_df["flag"]=="🔴 Overdue"]))
+    # Status badge
+    CAND_STATUS_BADGE = {
+        "Placed":  "🟡 Placed",
+        "Active":  "🟢 Active",
+    }
+    cred_df["_cand_status"] = cred_df["status"].apply(
+        lambda s: CAND_STATUS_BADGE.get(s, s)
+    )
+
+    # KPI summary
+    ck1,ck2,ck3,ck4,ck5 = st.columns(5)
+    ck1.metric("In Credentialing", len(cred_df))
+    ck2.metric("Active (Cleared)", len(cred_df[cred_df["status"]=="Active"]))
+    ck3.metric("Placed (Pending)", len(cred_df[cred_df["status"]=="Placed"]))
+    ck4.metric("Cred Clear",       len(cred_df[cred_df["_flag"]=="✅ Clear"]))
+    ck5.metric("Overdue",          len(cred_df[cred_df["_flag"]=="🔴 Overdue"]))
 
     st.markdown("<div style='height:1rem'></div>", unsafe_allow_html=True)
 
-    filt_cred = st.selectbox("Filter by Status", ["All","🔴 Overdue","🟡 Pending","✅ Clear","⚪ No Date"])
-    view_cred = cred_df if filt_cred=="All" else cred_df[cred_df["flag"]==filt_cred]
+    fc1, fc2 = st.columns(2)
+    filt_cred     = fc1.selectbox("Filter by Cred Flag", ["All","🔴 Overdue","🟡 Pending","✅ Clear","⚪ No Date"])
+    filt_cand_sta = fc2.selectbox("Filter by Candidate Status", ["All","Placed","Active"])
 
-    disp_cred = view_cred[["flag","candidate_name","specialty","cred_company",
-                             "cred_due_date","cred_status","cred_nm_fingerprint","cred_notes"]].copy()
-    disp_cred["cred_nm_fingerprint"] = disp_cred["cred_nm_fingerprint"].apply(lambda x: "Yes" if x else "No")
-    disp_cred.columns = ["Flag","Candidate","Specialty","Cred Company",
-                          "Due Date","Status","NM Fingerprint","Notes"]
-    st.dataframe(disp_cred.sort_values("Due Date"), use_container_width=True, hide_index=True)
+    view_cred = cred_df.copy()
+    if filt_cred     != "All": view_cred = view_cred[view_cred["_flag"]==filt_cred]
+    if filt_cand_sta != "All": view_cred = view_cred[view_cred["status"]==filt_cand_sta]
+
+    show_cols = ["_flag","_cand_status","candidate_name","specialty","cred_company",
+                 "cred_due_date","cred_status","cred_nm_fingerprint","cred_notes"]
+    show_cols = [c for c in show_cols if c in view_cred.columns]
+    disp_cred = view_cred[show_cols].copy()
+    if "cred_nm_fingerprint" in disp_cred.columns:
+        disp_cred["cred_nm_fingerprint"] = disp_cred["cred_nm_fingerprint"].apply(lambda x: "Yes" if x else "No")
+    disp_cred.columns = ["Cred Flag","Cand Status","Candidate","Specialty","Cred Company",
+                          "Due Date","Cred Status","NM Fingerprint","Cred Notes"][:len(disp_cred.columns)]
+    st.dataframe(disp_cred.sort_values("Due Date", na_position="last"),
+                 use_container_width=True, hide_index=True)
+
+    st.caption("Candidates move here when set to Placed (credentialing in progress) or Active (cleared and working). "
+               "Terminal statuses (Cancelled, Declined, Job Closed) are automatically removed from this view.")
 
 # Separator page (divider in sidebar)
 
