@@ -2330,8 +2330,9 @@ elif page == "Program ROI":
     </div>""", unsafe_allow_html=True)
 
     # ── Pull placed providers from candidates + their spend ───────────────────
-    # Active = cleared and working = revenue generating; Placed = credentialing handoff
-    placed = df_cands[df_cands["status"] == "Active"].copy() if not df_cands.empty else pd.DataFrame()
+    # ROI pulls Active (on assignment, generating revenue) AND Placed (cleared for work, incoming)
+    # Both represent committed providers — Active are live, Placed are credentialing/onboarding
+    placed = df_cands[df_cands["status"].isin(["Active","Placed"])].copy() if not df_cands.empty else pd.DataFrame()
 
     if placed.empty and df.empty:
         st.info("No placed candidates or logged spend yet. Place a candidate and log spend to see ROI.")
