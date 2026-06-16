@@ -1807,16 +1807,23 @@ elif page == "Requisitions":
                 view_reqs = view_reqs[mask]
 
             view_reqs = view_reqs.sort_values("req_open_date", ascending=False).reset_index(drop=True)
+
+            def _req_days_open(d):
+                try: return int((date.today() - date.fromisoformat(str(d))).days)
+                except: return None
+            view_reqs["days_open"] = view_reqs["req_open_date"].apply(_req_days_open)
+
             st.markdown(f"**{len(view_reqs)} requisitions** — click any cell to edit, then hit Save All Changes.")
 
-            edit_cols = ["status","discipline","specialty","shift","req_type","bill_rate","slots_open","req_open_date","notes"]
+            edit_cols = ["status","discipline","specialty","shift","req_type","bill_rate","slots_open","req_open_date","days_open","notes"]
             edit_cols = [c for c in edit_cols if c in view_reqs.columns]
 
             edited_reqs = st.data_editor(
                 view_reqs[edit_cols + ["id"]].rename(columns={
                     "status":"Status","discipline":"Discipline","specialty":"Specialty",
                     "shift":"Shift","req_type":"Type","bill_rate":"Bill Rate",
-                    "slots_open":"Slots","req_open_date":"Opened","notes":"Notes","id":"_id"
+                    "slots_open":"Slots","req_open_date":"Opened","days_open":"Days Open",
+                    "notes":"Notes","id":"_id"
                 }),
                 column_config={
                     "Status":    st.column_config.SelectboxColumn("Status",    options=REQ_STATUSES, required=True),
@@ -1825,7 +1832,8 @@ elif page == "Requisitions":
                     "Bill Rate": st.column_config.NumberColumn("Bill Rate",    min_value=0, step=1, format="$%.0f"),
                     "Slots":     st.column_config.NumberColumn("Slots",        min_value=0, step=1),
                     "Opened":    st.column_config.TextColumn("Opened"),
-                    "Notes":     st.column_config.TextColumn("Notes",  width="large"),
+                    "Days Open": st.column_config.NumberColumn("Days Open",    disabled=True, width="small"),
+                    "Notes":     st.column_config.TextColumn("Notes",          width="large"),
                     "Specialty": st.column_config.TextColumn("Specialty"),
                     "Shift":     st.column_config.TextColumn("Shift"),
                     "_id":       st.column_config.Column("_id", disabled=True, width="small"),
@@ -2232,19 +2240,65 @@ elif page == "Credentialing":
     if filt_cred     != "All": view_cred = view_cred[view_cred["_flag"]==filt_cred]
     if filt_cand_sta != "All": view_cred = view_cred[view_cred["status"]==filt_cand_sta]
 
-    show_cols = ["_flag","_cand_status","candidate_name","specialty","cred_company",
-                 "cred_due_date","cred_status","cred_nm_fingerprint","cred_notes"]
-    show_cols = [c for c in show_cols if c in view_cred.columns]
-    disp_cred = view_cred[show_cols].copy()
-    if "cred_nm_fingerprint" in disp_cred.columns:
-        disp_cred["cred_nm_fingerprint"] = disp_cred["cred_nm_fingerprint"].apply(lambda x: "Yes" if x else "No")
-    disp_cred.columns = ["Cred Flag","Cand Status","Candidate","Specialty","Cred Company",
-                          "Due Date","Cred Status","NM Fingerprint","Cred Notes"][:len(disp_cred.columns)]
-    st.dataframe(disp_cred.sort_values("Due Date", na_position="last"),
-                 use_container_width=True, hide_index=True)
+    view_cred = view_cred.sort_values("cred_due_date", na_position="last").reset_index(drop=True)
 
-    st.caption("Candidates move here when set to Placed (credentialing in progress) or Active (cleared and working). "
-               "Terminal statuses (Cancelled, Declined, Job Closed) are automatically removed from this view.")
+    st.markdown(f"**{len(view_cred)} candidates** in view — click any cell to edit, then hit Save All Changes.")
+
+    # Editable grid — cred fields + candidate status + id
+    edit_cred_cols = ["_flag","_cand_status","candidate_name","specialty",
+                      "status","cred_company","cred_due_date","cred_status",
+                      "cred_nm_fingerprint","cred_notes","id"]
+    edit_cred_cols = [c for c in edit_cred_cols if c in view_cred.columns]
+
+    edited_cred = st.data_editor(
+        view_cred[edit_cred_cols].rename(columns={
+            "_flag":"Cred Flag","_cand_status":"Cand Status",
+            "candidate_name":"Candidate","specialty":"Specialty",
+            "status":"Pipeline Status","cred_company":"Cred Company",
+            "cred_due_date":"Due Date","cred_status":"Cred Status",
+            "cred_nm_fingerprint":"NM Fingerprint","cred_notes":"Cred Notes",
+            "id":"_id"
+        }),
+        column_config={
+            "Cred Flag":      st.column_config.TextColumn("Cred Flag",     disabled=True, width="small"),
+            "Cand Status":    st.column_config.TextColumn("Cand Status",   disabled=True, width="small"),
+            "Candidate":      st.column_config.TextColumn("Candidate",     disabled=True, width="medium"),
+            "Specialty":      st.column_config.TextColumn("Specialty",     disabled=True, width="medium"),
+            "Pipeline Status":st.column_config.SelectboxColumn("Pipeline Status", options=CAND_STATUSES, width="medium"),
+            "Cred Company":   st.column_config.TextColumn("Cred Company",  width="small"),
+            "Due Date":       st.column_config.TextColumn("Due Date",      width="small"),
+            "Cred Status":    st.column_config.SelectboxColumn("Cred Status", options=[""]+CRED_STATUSES, width="small"),
+            "NM Fingerprint": st.column_config.CheckboxColumn("NM Fingerprint", width="small"),
+            "Cred Notes":     st.column_config.TextColumn("Cred Notes",    width="large"),
+            "_id":            st.column_config.Column("_id", disabled=True, width="small"),
+        },
+        use_container_width=True, hide_index=True,
+        height=min(500, 55 + len(view_cred) * 35),
+        key="cred_editor"
+    )
+
+    sc1, _ = st.columns([1,5])
+    with sc1:
+        if st.button("Save All Changes", type="primary", use_container_width=True, key="cred_save"):
+            cred_col_map = {
+                "Pipeline Status": "status",
+                "Cred Company":    "cred_company",
+                "Due Date":        "cred_due_date",
+                "Cred Status":     "cred_status",
+                "NM Fingerprint":  "cred_nm_fingerprint",
+                "Cred Notes":      "cred_notes",
+            }
+            saved = 0
+            for _, row in edited_cred.iterrows():
+                rec_id  = row["_id"]
+                updates = {cred_col_map[k]: row[k] for k in cred_col_map if k in row}
+                _update_record(CANDIDATE_FILE, rec_id, updates)
+                saved += 1
+            st.success(f"{saved} record(s) saved.")
+            st.rerun()
+
+    st.caption("Candidates appear here when set to Placed or Active. Edit cred company, due date, status, NM fingerprint, and notes directly in the grid. "
+               "Pipeline Status column lets you move a provider to Active once credentialing clears — without leaving this page.")
 
 # Separator page (divider in sidebar)
 
