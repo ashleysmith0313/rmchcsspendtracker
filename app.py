@@ -919,17 +919,38 @@ def generate_cumulative_report(df, date_from, date_to, title, prepared_by="Ingen
         W=("week_ending","nunique"), H=("hours_worked","sum"),
         D=("days_worked","sum"), S=("total_spend","sum"),
     ).reset_index().sort_values("S", ascending=False)
+    def _clean_clin_name(name):
+        """Shorten VitalSolution invoice names to readable labels."""
+        n = str(name).strip()
+        if "vitalsolution" in n.lower() or "vitalsol" in n.lower():
+            # Try to extract invoice number
+            import re
+            m = re.search(r"(\d{7,})", n)
+            inv = m.group(1) if m else ""
+            # Determine type from invoice number or description
+            if "4044534" in n or "admin" in n.lower():
+                return "VitalSolution — Admin Fee"
+            elif "4044533" in n or "professional" in n.lower():
+                return "VitalSolution — Prof. Services"
+            elif inv:
+                return f"VitalSolution — Inv {inv[-4:]}"
+            return "VitalSolution"
+        if len(n) > 28: n = n[:26] + "…"
+        return n
+
+    cell_style = PS("cn", parent=sty["Normal"], fontSize=8, leading=9.5)
     pv = [["Clinician","Type","Specialty","Wks","Hrs / Days","Total Spend"]]
     for _, r in prov.iterrows():
         hrs  = r["H"] if pd.notna(r["H"]) else 0
         days = r["D"] if pd.notna(r["D"]) else 0
-        name = str(r["provider_name"])
-        if len(name) > 30: name = name[:28]+"…"
-        qty  = f"{hrs:.1f} hrs" if hrs>0 else (f"{days:.1f} days" if days>0 else "—")
+        name = _clean_clin_name(r["provider_name"])
+        ptype = str(r.get("provider_type","")) if pd.notna(r.get("provider_type","")) else ""
+        spec  = str(r["specialty"]) if pd.notna(r["specialty"]) else ""
+        qty   = f"{hrs:.1f} hrs" if hrs>0 else (f"{days:.1f} days" if days>0 else "—")
         pv.append([
-            Paragraph(name, PS("pn",parent=sty["Normal"],fontSize=8,leading=9.5)),
-            str(r.get("provider_type","")),
-            Paragraph(str(r["specialty"]), PS("sp",parent=sty["Normal"],fontSize=8,leading=9.5)),
+            Paragraph(name, cell_style),
+            ptype,
+            Paragraph(spec, cell_style),
             str(int(r["W"])), qty, f"${r['S']:,.2f}"])
     pv.append(["TOTAL","","",str(total_weeks),
                f"{tot_hrs:.1f} hrs" if has_hourly else "—", f"${total_spend:,.2f}"])
