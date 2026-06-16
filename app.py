@@ -2830,9 +2830,26 @@ elif page == "Program ROI":
                             "Discipline": "—",
                             "Labor Cost": f"${unmatched_spend:,.0f}",
                             "Revenue":    "—",
-                            "Note":       "Logged spend not matched to a placed provider",
+                            "Note":       "⚠️ Click expander below to identify",
                         })
                     st.dataframe(pd.DataFrame(cost_rows), use_container_width=True, hide_index=True)
+
+                    # Unmatched drill-down
+                    if unmatched_spend > 0 and not spend_filtered.empty:
+                        with st.expander(f"🔍 Identify Unmatched Spend — ${unmatched_spend:,.0f} across {len(spend_filtered[~spend_filtered['provider_name'].apply(_is_matched) & ~spend_filtered['provider_name'].apply(_is_vital)])} entries"):
+                            unmatched_rows_df = spend_filtered[
+                                ~spend_filtered["provider_name"].apply(_is_matched) &
+                                ~spend_filtered["provider_name"].apply(_is_vital)
+                            ].copy()
+                            unmatched_rows_df = unmatched_rows_df.sort_values("total_spend", ascending=False)
+                            disp_cols = ["week_ending","provider_name","specialty","service_line","total_spend","invoice_number","notes"]
+                            disp_cols = [c for c in disp_cols if c in unmatched_rows_df.columns]
+                            disp_um = unmatched_rows_df[disp_cols].copy()
+                            if "total_spend" in disp_um.columns:
+                                disp_um["total_spend"] = disp_um["total_spend"].apply(lambda x: f"${x:,.2f}")
+                            disp_um.columns = [c.replace("_"," ").title() for c in disp_um.columns]
+                            st.caption("These spend log entries don't match any placed candidate by first name. Fix by correcting the provider name in Manage Entries, or add the provider as a placed/active candidate.")
+                            st.dataframe(disp_um, use_container_width=True, hide_index=True)
 
                 st.markdown("---")
                 st.markdown("#### Program Financials")
