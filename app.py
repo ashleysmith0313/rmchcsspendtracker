@@ -750,238 +750,203 @@ def generate_pdf_report(df, week_ending, title, prepared_by="Ingenovis ITO",
 
 def generate_cumulative_report(df, date_from, date_to, title, prepared_by="Ingenovis ITO",
                                 include_detail=True, include_notes=True) -> bytes:
-    """Single-page total spend report — DiagnOS-style branded layout."""
+    """Single-page total spend report."""
     import io as _io
     from reportlab.lib.pagesizes import letter
-    from reportlab.lib import colors as _colors
+    from reportlab.lib import colors as rc
     from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
     from reportlab.lib.units import inch
     from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, HRFlowable
     from reportlab.lib.enums import TA_RIGHT, TA_CENTER, TA_LEFT
 
-    NAVY  = _colors.HexColor("#283652")
-    RED   = _colors.HexColor("#DD4F20")
-    LG    = _colors.HexColor("#F1ECE9")
-    MG    = _colors.HexColor("#B3B5B0")
-    BLUE2 = _colors.HexColor("#1a3a5c")
-    ACNT  = _colors.HexColor("#dbeafe")
-    WHT   = _colors.white
-    SLATE = _colors.HexColor("#64748b")
-    FW    = 6.5 * inch
+    NAVY = rc.HexColor("#283652")
+    RED  = rc.HexColor("#DD4F20")
+    LG   = rc.HexColor("#F1ECE9")
+    MG   = rc.HexColor("#B3B5B0")
+    ACNT = rc.HexColor("#dbeafe")
+    WHT  = rc.white
+    GRY  = rc.HexColor("#64748b")
+    DKBL = rc.HexColor("#1a3a5c")
 
+    # Canvas-painted header and footer — keeps them out of the story flow
     def on_page(canvas, doc):
         canvas.saveState()
         pw, ph = letter
-        m = 0.75 * inch
-        # Navy header bar
+        m = 0.65*inch
+        # Navy header
         canvas.setFillColor(NAVY)
-        canvas.rect(0, ph - 1.15*inch, pw, 1.15*inch, fill=1, stroke=0)
-        # Red left accent stripe
+        canvas.rect(0, ph-1.10*inch, pw, 1.10*inch, fill=1, stroke=0)
+        # Red left stripe
         canvas.setFillColor(RED)
-        canvas.rect(0, 0, 0.10*inch, ph, fill=1, stroke=0)
-        # Title
-        canvas.setFont("Helvetica-Bold", 13)
+        canvas.rect(0, 0, 0.09*inch, ph, fill=1, stroke=0)
+        # Header text
+        canvas.setFont("Helvetica-Bold", 12)
         canvas.setFillColor(WHT)
-        canvas.drawString(m, ph - 0.42*inch, "RMCHCS ITO Program")
-        canvas.setFont("Helvetica", 9)
-        canvas.setFillColor(_colors.HexColor("#A8C4D4"))
-        canvas.drawString(m, ph - 0.62*inch, "Total Spend Report")
-        canvas.setFont("Helvetica", 8)
-        canvas.setFillColor(_colors.HexColor("#94a3b8"))
-        canvas.drawString(m, ph - 0.82*inch,
-            f"Period: {date_from}  through  {date_to}  |  Ingenovis Health ITO")
-        canvas.drawRightString(pw - m, ph - 0.82*inch,
+        canvas.drawString(m, ph-0.38*inch, "RMCHCS ITO Program  |  Total Spend Report")
+        canvas.setFont("Helvetica", 7.5)
+        canvas.setFillColor(rc.HexColor("#94a3b8"))
+        canvas.drawString(m, ph-0.58*inch,
+            f"Period: {date_from}  –  {date_to}  |  Prepared by: {prepared_by}")
+        canvas.drawRightString(pw-m, ph-0.58*inch,
             f"Generated {datetime.now().strftime('%B %d, %Y')}")
-        # Red rule under header
+        # Red rule
         canvas.setStrokeColor(RED)
-        canvas.setLineWidth(1.5)
-        canvas.line(m, ph - 1.20*inch, pw - m, ph - 1.20*inch)
-        # Footer rule
-        canvas.setStrokeColor(NAVY)
-        canvas.setLineWidth(0.5)
-        canvas.line(m, 0.62*inch, pw - m, 0.62*inch)
-        canvas.setFont("Helvetica", 7)
-        canvas.setFillColor(_colors.HexColor("#777777"))
-        canvas.drawString(m, 0.44*inch, f"Confidential  |  {prepared_by}")
-        canvas.drawRightString(pw - m, 0.44*inch,
-            f"Report generated {datetime.now().strftime('%B %d, %Y at %I:%M %p')}")
+        canvas.setLineWidth(1.2)
+        canvas.line(m, ph-1.14*inch, pw-m, ph-1.14*inch)
+        # Footer
+        canvas.setStrokeColor(MG)
+        canvas.setLineWidth(0.4)
+        canvas.line(m, 0.52*inch, pw-m, 0.52*inch)
+        canvas.setFont("Helvetica", 6.5)
+        canvas.setFillColor(GRY)
+        canvas.drawString(m, 0.36*inch, "Confidential  |  Ingenovis Health ITO")
+        canvas.drawRightString(pw-m, 0.36*inch,
+            f"Generated {datetime.now().strftime('%B %d, %Y at %I:%M %p')}")
         canvas.restoreState()
 
     sty = getSampleStyleSheet()
 
-    def ps(nm, fn="Helvetica", fs=9, ld=12, tc=None, aln=0, **kw):
-        return ParagraphStyle(nm, parent=sty["Normal"], fontName=fn, fontSize=fs,
-                              leading=ld, textColor=tc or NAVY, alignment=aln, **kw)
-
-    def h2(text, w=FW):
-        inner = Table([[Paragraph(text, ps("h2i", fn="Helvetica-Bold", fs=10, tc=NAVY, ld=13, leftIndent=8))]],
-                      colWidths=[w])
-        inner.setStyle(TableStyle([
-            ("BACKGROUND",(0,0),(-1,-1),LG),
-            ("LINEBEFORE",(0,0),(0,-1),3,NAVY),
-            ("TOPPADDING",(0,0),(-1,-1),6),("BOTTOMPADDING",(0,0),(-1,-1),6),
-            ("LEFTPADDING",(0,0),(-1,-1),10),("RIGHTPADDING",(0,0),(-1,-1),8),
-        ]))
-        wrapper = Table([[""], [inner], [""]], colWidths=[w], rowHeights=[5,None,3])
-        wrapper.setStyle(TableStyle([
-            ("TOPPADDING",(0,0),(-1,-1),0),("BOTTOMPADDING",(0,0),(-1,-1),0),
-            ("LEFTPADDING",(0,0),(-1,-1),0),("RIGHTPADDING",(0,0),(-1,-1),0),
-        ]))
-        return wrapper
-
-    def make_tbl(data, cw, align_right_from=1):
+    # Tiny table builder — 6.5pt fonts, 3pt padding
+    def T(data, cw):
         t = Table(data, colWidths=cw)
         t.setStyle(TableStyle([
             ("BACKGROUND",(0,0),(-1,0),NAVY),
             ("TEXTCOLOR",(0,0),(-1,0),WHT),
-            ("FONTNAME",(0,0),(-1,0),"Helvetica-Bold"),("FONTSIZE",(0,0),(-1,0),8),
+            ("FONTNAME",(0,0),(-1,0),"Helvetica-Bold"),("FONTSIZE",(0,0),(-1,0),6.5),
             ("ROWBACKGROUNDS",(0,1),(-1,-2),[WHT,LG]),
             ("BACKGROUND",(0,-1),(-1,-1),ACNT),
-            ("FONTNAME",(0,1),(-1,-1),"Helvetica"),("FONTSIZE",(0,1),(-1,-1),8.5),
-            ("FONTNAME",(0,-1),(-1,-1),"Helvetica-Bold"),("FONTSIZE",(0,-1),(-1,-1),8.5),
+            ("FONTNAME",(0,1),(-1,-1),"Helvetica"),("FONTSIZE",(0,1),(-1,-1),7),
+            ("FONTNAME",(0,-1),(-1,-1),"Helvetica-Bold"),("FONTSIZE",(0,-1),(-1,-1),7),
             ("TEXTCOLOR",(0,1),(-1,-1),NAVY),
-            ("GRID",(0,0),(-1,-1),0.25,MG),
-            ("TOPPADDING",(0,0),(-1,-1),5),("BOTTOMPADDING",(0,0),(-1,-1),5),
-            ("LEFTPADDING",(0,0),(-1,-1),7),("RIGHTPADDING",(0,0),(-1,-1),7),
-            ("ALIGN",(align_right_from,0),(-1,-1),"RIGHT"),
-            ("ALIGN",(0,0),(align_right_from-1,-1),"LEFT"),
+            ("GRID",(0,0),(-1,-1),0.2,MG),
+            ("TOPPADDING",(0,0),(-1,-1),2.5),("BOTTOMPADDING",(0,0),(-1,-1),2.5),
+            ("LEFTPADDING",(0,0),(-1,-1),5),("RIGHTPADDING",(0,0),(-1,-1),5),
+            ("ALIGN",(1,0),(-1,-1),"RIGHT"),("ALIGN",(0,0),(0,-1),"LEFT"),
         ]))
         return t
 
-    # ── Data calculations ─────────────────────────────────────────────────────
+    def sec(txt, w):
+        """Section label bar."""
+        t = Table([[Paragraph(f"<b>{txt.upper()}</b>",
+                   ParagraphStyle("sl", parent=sty["Normal"],
+                       fontName="Helvetica-Bold", fontSize=6.5,
+                       textColor=WHT, leading=8))]],
+                  colWidths=[w])
+        t.setStyle(TableStyle([
+            ("BACKGROUND",(0,0),(-1,-1),DKBL),
+            ("TOPPADDING",(0,0),(-1,-1),3),("BOTTOMPADDING",(0,0),(-1,-1),3),
+            ("LEFTPADDING",(0,0),(-1,-1),6),
+        ]))
+        return t
+
+    # ── Compute ───────────────────────────────────────────────────────────────
     total_spend     = df["total_spend"].sum()
     total_providers = df["provider_name"].nunique()
     total_weeks     = df["week_ending"].nunique()
     total_specs     = df["specialty"].nunique()
     has_hourly = (df["hours_worked"].fillna(0) > 0).any()
     tot_hrs    = df["hours_worked"].fillna(0).sum()
-    tot_days   = df["days_worked"].fillna(0).sum()
 
+    FW = 7.0*inch
     story = []
 
-    # ── KPI snapshot cards ────────────────────────────────────────────────────
-    kpis = [
-        ("TOTAL SPEND",   f"${total_spend:,.2f}"),
-        ("PROVIDERS",     str(total_providers)),
-        ("WEEKS TRACKED", str(total_weeks)),
-        ("SPECIALTIES",   str(total_specs)),
-    ]
-    cw4 = FW / 4
-    kpi_h = Table([[Paragraph(l, ps("kl", fn="Helvetica-Bold", fs=7.5, tc=WHT, aln=1))
-                    for l,_ in kpis]], colWidths=[cw4]*4)
-    kpi_h.setStyle(TableStyle([
-        ("BACKGROUND",(0,0),(-1,-1),BLUE2),
-        ("TOPPADDING",(0,0),(-1,-1),5),("BOTTOMPADDING",(0,0),(-1,-1),4),
-        ("LINEAFTER",(0,0),(2,-1),0.5,_colors.HexColor("#2d5a8e")),
-    ]))
-    kpi_v = Table([[Paragraph(v, ps("kv", fn="Helvetica-Bold", fs=17, tc=NAVY, aln=1, ld=20))
-                    for _,v in kpis]], colWidths=[cw4]*4)
-    kpi_v.setStyle(TableStyle([
-        ("BACKGROUND",(0,0),(-1,-1),LG),
-        ("TOPPADDING",(0,0),(-1,-1),8),("BOTTOMPADDING",(0,0),(-1,-1),8),
-        ("LINEAFTER",(0,0),(2,-1),0.5,MG),
-        ("BOX",(0,0),(-1,-1),0.5,MG),
-    ]))
-    story += [kpi_h, kpi_v, Spacer(1, 2)]
+    # ── KPI bar ───────────────────────────────────────────────────────────────
+    kpis = [("TOTAL SPEND", f"${total_spend:,.2f}"),
+            ("PROVIDERS", str(total_providers)),
+            ("WEEKS TRACKED", str(total_weeks)),
+            ("SPECIALTIES", str(total_specs))]
+    cw4 = FW/4
+    PS = ParagraphStyle
+    kh = Table([[Paragraph(l, PS("kl",parent=sty["Normal"],fontName="Helvetica-Bold",
+                 fontSize=7,textColor=WHT,alignment=1)) for l,_ in kpis]],
+               colWidths=[cw4]*4)
+    kh.setStyle(TableStyle([("BACKGROUND",(0,0),(-1,-1),DKBL),
+        ("TOPPADDING",(0,0),(-1,-1),4),("BOTTOMPADDING",(0,0),(-1,-1),3),
+        ("LINEAFTER",(0,0),(2,-1),0.4,rc.HexColor("#2d5a8e"))]))
+    kv = Table([[Paragraph(v, PS("kv",parent=sty["Normal"],fontName="Helvetica-Bold",
+                 fontSize=15,textColor=NAVY,alignment=1,leading=18)) for _,v in kpis]],
+               colWidths=[cw4]*4)
+    kv.setStyle(TableStyle([("BACKGROUND",(0,0),(-1,-1),LG),
+        ("TOPPADDING",(0,0),(-1,-1),6),("BOTTOMPADDING",(0,0),(-1,-1),6),
+        ("LINEAFTER",(0,0),(2,-1),0.4,MG),("BOX",(0,0),(-1,-1),0.4,MG)]))
+    story += [kh, kv, Spacer(1,5)]
 
-    # ── Weekly Summary ────────────────────────────────────────────────────────
-    story.append(h2("Weekly Spend Summary"))
+    # ── Weekly table ──────────────────────────────────────────────────────────
+    story.append(sec("Weekly Spend Summary", FW))
     weekly = df.groupby("week_ending").agg(
-        Pvdrs=("provider_name","nunique"),
-        Spend=("total_spend","sum"),
-        Hrs=("hours_worked","sum"),
-    ).reset_index().sort_values("week_ending")
-    running = 0
-    wk_rows = [["Week Ending","Providers","Hours","Week Spend","Cumulative"]]
+        P=("provider_name","nunique"), S=("total_spend","sum"),
+        H=("hours_worked","sum")).reset_index().sort_values("week_ending")
+    running, wk = 0, [["Week Ending","Prov","Hours","Spend","Cumulative"]]
     for _, r in weekly.iterrows():
-        running += r["Spend"]
-        hrs = r["Hrs"] if pd.notna(r["Hrs"]) else 0
-        wk_rows.append([str(r["week_ending"]), str(int(r["Pvdrs"])),
-                        f"{hrs:.1f} hrs" if has_hourly else "—",
-                        f"${r['Spend']:,.2f}", f"${running:,.2f}"])
-    wk_rows.append(["TOTAL", str(total_providers),
-                    f"{tot_hrs:.1f} hrs" if has_hourly else "—",
-                    f"${total_spend:,.2f}", ""])
-    story.append(make_tbl(wk_rows, [1.3*inch,0.8*inch,1.0*inch,1.35*inch,1.35*inch]))
-    story.append(Spacer(1, 2))
+        running += r["S"]
+        hrs = r["H"] if pd.notna(r["H"]) else 0
+        wk.append([str(r["week_ending"]), str(int(r["P"])),
+                   f"{hrs:.1f} hrs" if has_hourly else "—",
+                   f"${r['S']:,.2f}", f"${running:,.2f}"])
+    wk.append(["TOTAL", str(total_providers),
+               f"{tot_hrs:.1f} hrs" if has_hourly else "—",
+               f"${total_spend:,.2f}", ""])
+    story.append(T(wk, [1.25*inch,0.65*inch,0.90*inch,1.25*inch,1.25*inch]))
+    story.append(Spacer(1,5))
 
-    # ── Specialty + Service Line (two columns) ────────────────────────────────
-    LW = 3.1*inch
-    RW = 3.1*inch
-    GAP = 0.3*inch
+    # ── Specialty + Service Line side by side ─────────────────────────────────
+    LW, RW, GAP = 3.35*inch, 3.35*inch, 0.30*inch
 
-    spec = df.groupby("specialty").agg(
-        Pvdrs=("provider_name","nunique"),
-        Spend=("total_spend","sum"),
-    ).reset_index().sort_values("Spend", ascending=False)
-    sp_rows = [["Specialty","Providers","Total Spend","% of Total"]]
+    spec = df.groupby("specialty").agg(P=("provider_name","nunique"),
+           S=("total_spend","sum")).reset_index().sort_values("S",ascending=False)
+    sp = [["Specialty","Prov","Spend","% Total"]]
     for _, r in spec.iterrows():
-        pct = (r["Spend"]/total_spend*100) if total_spend else 0
-        sp_rows.append([r["specialty"], str(int(r["Pvdrs"])),
-                        f"${r['Spend']:,.2f}", f"{pct:.1f}%"])
-    sp_rows.append(["TOTAL", str(total_providers), f"${total_spend:,.2f}", "100%"])
-    sp_tbl = make_tbl(sp_rows, [1.2*inch,0.6*inch,0.85*inch,0.65*inch])
+        sp.append([r["specialty"], str(int(r["P"])),
+                   f"${r['S']:,.2f}", f"{(r['S']/total_spend*100):.1f}%"])
+    sp.append(["TOTAL", str(total_providers), f"${total_spend:,.2f}", "100%"])
+    sp_tbl = T(sp, [1.45*inch,0.45*inch,0.85*inch,0.60*inch])
 
-    sl_sum = df.groupby("service_line").agg(
-        Pvdrs=("provider_name","nunique"),
-        Spend=("total_spend","sum"),
-    ).reset_index().sort_values("Spend", ascending=False)
-    sl_rows = [["Service Line","Providers","Total Spend","% of Total"]]
-    for _, r in sl_sum.iterrows():
-        pct = (r["Spend"]/total_spend*100) if total_spend else 0
-        sl_rows.append([r["service_line"], str(int(r["Pvdrs"])),
-                        f"${r['Spend']:,.2f}", f"{pct:.1f}%"])
-    sl_tbl = make_tbl(sl_rows, [1.2*inch,0.6*inch,0.85*inch,0.65*inch])
+    sl = df.groupby("service_line").agg(P=("provider_name","nunique"),
+         S=("total_spend","sum")).reset_index().sort_values("S",ascending=False)
+    sl_rows = [["Service Line","Prov","Spend","% Total"]]
+    for _, r in sl.iterrows():
+        sl_rows.append([r["service_line"], str(int(r["P"])),
+                        f"${r['S']:,.2f}", f"{(r['S']/total_spend*100):.1f}%"])
+    sl_tbl = T(sl_rows, [1.45*inch,0.45*inch,0.85*inch,0.60*inch])
 
-    left_col  = Table([[h2("By Specialty", LW)],[sp_tbl],[Spacer(1,6)],
-                       [h2("By Service Line", LW)],[sl_tbl]],
-                      colWidths=[LW])
-    left_col.setStyle(TableStyle([
-        ("TOPPADDING",(0,0),(-1,-1),0),("BOTTOMPADDING",(0,0),(-1,-1),0),
-        ("LEFTPADDING",(0,0),(-1,-1),0),("RIGHTPADDING",(0,0),(-1,-1),0),
-    ]))
-
-    two_col = Table([[left_col, Spacer(GAP,1), Spacer(RW,1)]],
-                    colWidths=[LW, GAP, RW])
+    # True side-by-side using a single outer table with two independent inner tables
+    two_col = Table([
+        [sec("By Specialty", LW),    Spacer(GAP,1), sec("By Service Line", RW)],
+        [sp_tbl,                      Spacer(GAP,1), sl_tbl],
+    ], colWidths=[LW, GAP, RW])
     two_col.setStyle(TableStyle([
         ("VALIGN",(0,0),(-1,-1),"TOP"),
         ("TOPPADDING",(0,0),(-1,-1),0),("BOTTOMPADDING",(0,0),(-1,-1),0),
         ("LEFTPADDING",(0,0),(-1,-1),0),("RIGHTPADDING",(0,0),(-1,-1),0),
     ]))
-    story += [two_col, Spacer(1, 2)]
+    story += [two_col, Spacer(1,5)]
 
     # ── Provider Summary ──────────────────────────────────────────────────────
-    story.append(h2("Provider Summary"))
-    prov_sum = df.groupby(["provider_name","provider_type","specialty"]).agg(
-        Weeks=("week_ending","nunique"),
-        Hrs=("hours_worked","sum"),
-        Days=("days_worked","sum"),
-        Spend=("total_spend","sum"),
-    ).reset_index().sort_values("Spend", ascending=False)
-
-    pv_rows = [["Provider","Type","Specialty","Weeks","Hours / Days","Total Spend"]]
-    for _, r in prov_sum.iterrows():
-        hrs  = r["Hrs"]  if pd.notna(r["Hrs"])  else 0
-        days = r["Days"] if pd.notna(r["Days"]) else 0
+    story.append(sec("Provider Summary", FW))
+    prov = df.groupby(["provider_name","provider_type","specialty"]).agg(
+        W=("week_ending","nunique"), H=("hours_worked","sum"),
+        D=("days_worked","sum"), S=("total_spend","sum"),
+    ).reset_index().sort_values("S",ascending=False)
+    pv = [["Provider","Type","Specialty","Wks","Hrs/Days","Total Spend"]]
+    for _, r in prov.iterrows():
+        hrs  = r["H"] if pd.notna(r["H"]) else 0
+        days = r["D"] if pd.notna(r["D"]) else 0
         name = str(r["provider_name"])
-        if len(name) > 28: name = name[:26] + "…"
-        if hrs > 0 and days > 0:   qty = f"{hrs:.1f}h / {days:.1f}d"
-        elif hrs > 0:               qty = f"{hrs:.1f} hrs"
-        elif days > 0:              qty = f"{days:.1f} days"
-        else:                       qty = "—"
-        pv_rows.append([Paragraph(name, ps("pn",fs=8,ld=10)),
-                        str(r.get("provider_type","")),
-                        Paragraph(str(r["specialty"]), ps("sp",fs=8,ld=10)),
-                        str(int(r["Weeks"])), qty, f"${r['Spend']:,.2f}"])
-    pv_rows.append(["TOTAL","","",str(total_weeks),
-                    f"{tot_hrs:.1f} hrs" if has_hourly else "—",
-                    f"${total_spend:,.2f}"])
-    story.append(make_tbl(pv_rows, [1.8*inch,0.5*inch,1.15*inch,0.5*inch,0.9*inch,0.95*inch]))
+        if len(name) > 30: name = name[:28]+"…"
+        qty  = f"{hrs:.1f}h" if hrs>0 else (f"{days:.1f}d" if days>0 else "—")
+        pv.append([Paragraph(name, ParagraphStyle("pn",parent=sty["Normal"],
+                   fontSize=7,leading=8.5)), str(r.get("provider_type","")),
+                   Paragraph(str(r["specialty"]), ParagraphStyle("sp",parent=sty["Normal"],
+                   fontSize=7,leading=8.5)),
+                   str(int(r["W"])), qty, f"${r['S']:,.2f}"])
+    pv.append(["TOTAL","","",str(total_weeks),
+               f"{tot_hrs:.1f}h" if has_hourly else "—", f"${total_spend:,.2f}"])
+    story.append(T(pv, [1.85*inch,0.48*inch,1.20*inch,0.42*inch,0.75*inch,0.90*inch]))
 
     buf = _io.BytesIO()
     doc = SimpleDocTemplate(buf, pagesize=letter,
-        leftMargin=0.75*inch, rightMargin=0.75*inch,
-        topMargin=1.40*inch, bottomMargin=0.90*inch)
+        leftMargin=0.65*inch, rightMargin=0.65*inch,
+        topMargin=1.28*inch, bottomMargin=0.68*inch)
     doc.build(story, onFirstPage=on_page, onLaterPages=on_page)
     return buf.getvalue()
 # ══════════════════════════════════════════════════════════════════════════════
