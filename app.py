@@ -77,6 +77,17 @@ def delete_entry(entry_id: str):
     with open(DATA_FILE, "w") as f:
         json.dump(data, f, indent=2)
 
+def update_entry(entry_id: str, updates: dict):
+    _ensure_data_file()
+    with open(DATA_FILE, "r") as f:
+        data = json.load(f)
+    for e in data:
+        if e.get("id") == entry_id:
+            e.update({k: (None if (v != v or v is None) else v) for k, v in updates.items()})
+            e["updated_at"] = datetime.now().isoformat()
+    with open(DATA_FILE, "w") as f:
+        json.dump(data, f, indent=2)
+
 def get_week_ending() -> date:
     today = date.today()
     days_until_saturday = (5 - today.weekday()) % 7
@@ -1604,7 +1615,7 @@ elif page == "Manage Entries":
     <div class="page-header">
         <div>
             <div class="page-header-title">Manage Entries</div>
-            <div class="page-header-sub">Review and delete logged spend entries</div>
+            <div class="page-header-sub">Edit, correct, and delete logged spend entries</div>
         </div>
     </div>""", unsafe_allow_html=True)
 
@@ -1612,37 +1623,88 @@ elif page == "Manage Entries":
         st.info("No entries logged yet.")
         st.stop()
 
-    all_weeks = sorted(df["week_ending"].unique(), reverse=True)
-    sel_week  = st.selectbox("Select Week", ["All Weeks"] + list(all_weeks))
-    view_df   = df.copy() if sel_week=="All Weeks" else df[df["week_ending"]==sel_week].copy()
-    view_df   = view_df.sort_values("week_ending", ascending=False).reset_index(drop=True)
-    st.markdown(f"**{len(view_df)} entries** in current view")
+    # Filters
+    fc1,fc2,fc3 = st.columns(3)
+    all_weeks  = sorted(df["week_ending"].unique(), reverse=True)
+    sel_week   = fc1.selectbox("Week", ["All Weeks"] + list(all_weeks))
+    sel_prov   = fc2.text_input("Search Provider Name")
+    sel_sl     = fc3.selectbox("Service Line", ["All"] + sorted(df["service_line"].dropna().unique().tolist()))
 
-    for _, row in view_df.iterrows():
-        with st.expander(f"{row['week_ending']} | {row['provider_name']} | {row['specialty']} | ${row['total_spend']:,.2f}"):
-            c1,c2,c3 = st.columns(3)
-            c1.write(f"**Provider Type:** {row.get('provider_type','N/A')}")
-            c2.write(f"**Service Line:** {row['service_line']}")
-            c3.write(f"**Department:** {row.get('department','N/A')}")
-            sl = row.get("service_line","")
-            if sl in HOURLY_SERVICE_LINES:
-                hrs  = row["hours_worked"] if pd.notna(row.get("hours_worked")) else "N/A"
-                rate = f"${row['bill_rate']:,.2f}/hr" if pd.notna(row.get("bill_rate")) else "N/A"
-                c1.write(f"**Hours Worked:** {hrs}")
-                c2.write(f"**Bill Rate:** {rate}")
-            else:
-                days = row["days_worked"] if pd.notna(row.get("days_worked")) else "N/A"
-                rate = f"${row['daily_rate']:,.2f}/day" if pd.notna(row.get("daily_rate")) else "N/A"
-                c1.write(f"**Days Worked:** {days}")
-                c2.write(f"**Daily Rate:** {rate}")
-            c3.write(f"**Total Spend:** ${row['total_spend']:,.2f}")
-            if row.get("notes"): st.write(f"**Notes:** {row['notes']}")
-            if row.get("invoice_number"): st.write(f"**Invoice #:** {row['invoice_number']}")
-            ot_label = " 🔶 OT" if row.get("is_ot") else ""
-            if ot_label: st.caption(f"Overtime entry{ot_label}")
-            if st.button("Delete Entry", key=f"del_{row['id']}", type="secondary"):
-                delete_entry(row["id"])
-                st.success("Entry deleted.")
+    view_df = df.copy()
+    if sel_week != "All Weeks": view_df = view_df[view_df["week_ending"]==sel_week]
+    if sel_prov: view_df = view_df[view_df["provider_name"].str.contains(sel_prov, case=False, na=False)]
+    if sel_sl != "All": view_df = view_df[view_df["service_line"]==sel_sl]
+    view_df = view_df.sort_values("week_ending", ascending=False).reset_index(drop=True)
+
+    st.markdown(f"**{len(view_df)} entries** — click any cell to edit, then hit Save All Changes.")
+
+    SERVICE_LINES = ["Nursing","Allied Health","Physician","APP","Other"]
+    PROVIDER_TYPES = ["RN","LPN","CNA","Tech","Physician","APP","CRNA","Other"]
+
+    edit_cols = ["week_ending","provider_name","provider_type","specialty","service_line",
+                 "hours_worked","bill_rate","days_worked","daily_rate","total_spend",
+                 "invoice_number","notes","id"]
+    edit_cols = [c for c in edit_cols if c in view_df.columns]
+
+    edited_spend = st.data_editor(
+        view_df[edit_cols].rename(columns={
+            "week_ending":"Week Ending","provider_name":"Provider",
+            "provider_type":"Provider Type","specialty":"Specialty",
+            "service_line":"Service Line","hours_worked":"Hours",
+            "bill_rate":"Bill Rate","days_worked":"Days",
+            "daily_rate":"Daily Rate","total_spend":"Total Spend",
+            "invoice_number":"Invoice #","notes":"Notes","id":"_id"
+        }),
+        column_config={
+            "Week Ending":   st.column_config.TextColumn("Week Ending",  width="small"),
+            "Provider":      st.column_config.TextColumn("Provider",     width="medium"),
+            "Provider Type": st.column_config.SelectboxColumn("Provider Type", options=PROVIDER_TYPES, width="small"),
+            "Specialty":     st.column_config.TextColumn("Specialty",    width="medium"),
+            "Service Line":  st.column_config.SelectboxColumn("Service Line",  options=SERVICE_LINES, width="small"),
+            "Hours":         st.column_config.NumberColumn("Hours",      min_value=0, step=0.25, format="%.2f", width="small"),
+            "Bill Rate":     st.column_config.NumberColumn("Bill Rate",  min_value=0, step=0.50, format="$%.2f", width="small"),
+            "Days":          st.column_config.NumberColumn("Days",       min_value=0, step=0.5,  format="%.1f",  width="small"),
+            "Daily Rate":    st.column_config.NumberColumn("Daily Rate", min_value=0, step=1.0,  format="$%.2f", width="small"),
+            "Total Spend":   st.column_config.NumberColumn("Total Spend",min_value=0, step=0.01, format="$%.2f", width="small"),
+            "Invoice #":     st.column_config.TextColumn("Invoice #",    width="small"),
+            "Notes":         st.column_config.TextColumn("Notes",        width="large"),
+            "_id":           st.column_config.Column("_id", disabled=True, width="small"),
+        },
+        use_container_width=True, hide_index=True,
+        height=min(500, 55 + len(view_df) * 35),
+        key="spend_editor"
+    )
+
+    sb1,sb2,_ = st.columns([1,1,4])
+    with sb1:
+        if st.button("Save All Changes", type="primary", use_container_width=True, key="spend_save"):
+            col_map = {
+                "Week Ending":"week_ending","Provider":"provider_name",
+                "Provider Type":"provider_type","Specialty":"specialty",
+                "Service Line":"service_line","Hours":"hours_worked",
+                "Bill Rate":"bill_rate","Days":"days_worked",
+                "Daily Rate":"daily_rate","Total Spend":"total_spend",
+                "Invoice #":"invoice_number","Notes":"notes"
+            }
+            saved = 0
+            for _, row in edited_spend.iterrows():
+                rec_id  = row["_id"]
+                updates = {col_map[k]: row[k] for k in col_map if k in row}
+                update_entry(rec_id, updates)
+                saved += 1
+            st.success(f"{saved} entries saved.")
+            st.rerun()
+    with sb2:
+        del_labels = [f"{r.get('Week Ending','')} | {r.get('Provider','')} | ${r.get('Total Spend',0):,.0f}"
+                      for _, r in edited_spend.iterrows()]
+        del_choice = st.selectbox("Delete entry", ["— select to delete —"] + del_labels,
+                                  key="spend_del_sel", label_visibility="collapsed")
+        if del_choice != "— select to delete —":
+            del_idx = del_labels.index(del_choice)
+            del_id  = edited_spend.iloc[del_idx]["_id"]
+            if st.button("Confirm Delete", type="secondary", key="spend_del_btn"):
+                delete_entry(del_id)
+                st.success("Deleted.")
                 st.rerun()
 
 # ══════════════════════════════════════════════════════════════════════════════
