@@ -7,6 +7,11 @@ import uuid
 import io
 from datetime import date, datetime, timedelta
 from openpyxl import load_workbook
+try:
+    import pdfplumber
+    _HAS_PDFPLUMBER = True
+except ImportError:
+    _HAS_PDFPLUMBER = False
 from reportlab.lib.pagesizes import letter
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib.units import inch
@@ -437,6 +442,66 @@ def parse_invoice_xlsx(file_obj) -> tuple:
         })
 
     return parsed, warnings, skipped
+
+# ══════════════════════════════════════════════════════════════════════════════
+# VITAL INVOICE PDF PARSER
+# ══════════════════════════════════════════════════════════════════════════════
+def parse_vital_invoice_pdf(file_obj) -> dict:
+    import re
+    if not _HAS_PDFPLUMBER:
+        raise ImportError("pdfplumber not installed.")
+    with pdfplumber.open(file_obj) as pdf:
+        text = "\n".join(page.extract_text() or "" for page in pdf.pages)
+    res = {"invoice_number":"","invoice_date":"","due_date":"","amount_due":0.0,"line_items":[]}
+    m = re.search(r"INVOICE[\s:]+([\d]+)", text)
+    if m: res["invoice_number"] = m.group(1).strip()
+    m = re.search(r"INVOICE DATE[\s:]+(\d+/\d+/\d+)", text)
+    if m:
+        try: res["invoice_date"] = datetime.strptime(m.group(1).strip(), "%m/%d/%Y").date().isoformat()
+        except: res["invoice_date"] = m.group(1).strip()
+    m = re.search(r"DUE DATE[\s:]+(\d+/\d+/\d+)", text)
+    if m:
+        try: res["due_date"] = datetime.strptime(m.group(1).strip(), "%m/%d/%Y").date().isoformat()
+        except: res["due_date"] = m.group(1).strip()
+    m = re.search(r"AMOUNT DUE[^\d]*([\d,]+\.\d{2})", text)
+    if m: res["amount_due"] = float(m.group(1).replace(",",""))
+    lines = text.split("\n")
+    start = 0
+    for i, ln in enumerate(lines):
+        if "DESCRIPTION" in ln and "QUANTITY" in ln:
+            start = i + 1; break
+    raw_items, buf = [], []
+    for ln in lines[start:]:
+        if "TOTAL DUE" in ln or "Page 1" in ln:
+            if buf: raw_items.append(" ".join(buf))
+            break
+        if ln.strip() in ("-", ""): continue
+        if re.search(r"-?\$\s*[\d,]+\.\d{2}", ln):
+            buf.append(ln.strip()); raw_items.append(" ".join(buf)); buf = []
+        else:
+            buf.append(ln.strip())
+    for raw in raw_items:
+        if not raw.strip(): continue
+        tots = re.findall(r"-?\$?\s*[\d,]+\.\d{2}", raw)
+        if not tots: continue
+        try: total_val = float(tots[-1].replace("$","").replace(",","").replace(" ",""))
+        except: continue
+        dm = re.search(r"(\d{4}-\d{2}-\d{2})", raw)
+        line_date = dm.group(1) if dm else res["invoice_date"]
+        qr = re.findall(r"(?<!\$)([\d]+\.?\d*)\s+([\d,]+\.\d{2})", raw)
+        qty, rate = None, None
+        if qr:
+            try: qty = float(qr[0][0]); rate = float(qr[0][1].replace(",",""))
+            except: pass
+        desc = re.sub(r"-?\s*\$?\s*[\d,]+\.\d{2}", "", raw)
+        desc = re.sub(r"\s{2,}", " ", desc).strip().rstrip("-").strip()
+        if "Credit" in desc or total_val < 0: itype = "Credit / Adjustment"
+        elif "Admin" in desc: itype = "Admin Fee"
+        elif "Professional" in desc: itype = "Professional Services"
+        else: itype = "Other"
+        res["line_items"].append({"description":desc,"quantity":qty,"rate":rate,"total":total_val,"date":line_date,"type":itype})
+    return res
+
 
 # ══════════════════════════════════════════════════════════════════════════════
 # PDF GENERATOR
@@ -1177,7 +1242,7 @@ elif page == "Log Spend":
         </div>
     </div>""", unsafe_allow_html=True)
 
-    tab_manual, tab_bulk, tab_invoice = st.tabs(["Single Entry", "Bulk Upload (CSV)", "Upload Invoice (Excel)"])
+    tab_manual, tab_bulk, tab_invoice, tab_vital = st.tabs(["Single Entry", "Bulk Upload (CSV)", "Upload Invoice (Excel)", "Upload Vital Invoice (PDF)"])
 
     with tab_manual:
         st.markdown("<div style='height:0.75rem'></div>", unsafe_allow_html=True)
@@ -1455,6 +1520,64 @@ elif page == "Log Spend":
                             saved += 1
                         st.success(f"{saved} entries saved from invoice. Total: ${inv_df['total_spend'].sum():,.2f}")
                         st.rerun()
+
+    with tab_vital:
+        st.markdown("<div style='height:0.75rem'></div>", unsafe_allow_html=True)
+        st.markdown('<div class="section-header">Upload VitalSolution Invoice (PDF)</div>', unsafe_allow_html=True)
+        st.markdown('<div class="section-sub">Parses VitalSolution PDF invoices and logs net amount as Vital spend.</div>', unsafe_allow_html=True)
+        if not _HAS_PDFPLUMBER:
+            st.error("pdfplumber not installed. Add pdfplumber>=0.10.0 to requirements.txt and redeploy.")
+        else:
+            vital_file = st.file_uploader("Choose Vital Invoice PDF", type=["pdf"], key="vital_pdf_upload", label_visibility="collapsed")
+            if vital_file:
+                with st.spinner("Parsing..."):
+                    try:
+                        vparsed = parse_vital_invoice_pdf(vital_file)
+                    except Exception as ve:
+                        st.error(f"Could not parse PDF: {ve}")
+                        vparsed = None
+                if vparsed:
+                    h1,h2,h3,h4 = st.columns(4)
+                    h1.metric("Invoice #", vparsed["invoice_number"])
+                    h2.metric("Invoice Date", vparsed["invoice_date"])
+                    h3.metric("Due Date", vparsed["due_date"])
+                    h4.metric("Amount Due", f"${vparsed['amount_due']:,.2f}")
+                    st.markdown("---")
+                    if vparsed["line_items"]:
+                        li_df = pd.DataFrame(vparsed["line_items"])
+                        li_disp = li_df.copy()
+                        li_disp["total"]    = li_disp["total"].apply(lambda x: f"${x:,.2f}")
+                        li_disp["quantity"] = li_disp["quantity"].apply(lambda x: f"{x:.2f}" if x else "--")
+                        li_disp["rate"]     = li_disp["rate"].apply(lambda x: f"${x:,.2f}" if x else "--")
+                        st.dataframe(li_disp[["type","description","date","quantity","rate","total"]].rename(columns={
+                            "type":"Type","description":"Description","date":"Period Date","quantity":"Qty","rate":"Rate","total":"Total"
+                        }), use_container_width=True, hide_index=True)
+                    st.markdown("---")
+                    st.markdown("**Confirm and Save**")
+                    vc1,vc2 = st.columns(2)
+                    v_provider = vc1.text_input("Provider / Description", value=f"VitalSolution - Invoice {vparsed['invoice_number']}", key="v_provider")
+                    v_specialty = vc2.text_input("Specialty", value="Cardiology", key="v_specialty")
+                    vc3,vc4 = st.columns(2)
+                    v_week    = vc3.text_input("Period Date", value=vparsed["invoice_date"], key="v_week")
+                    v_invoice = vc4.text_input("Invoice #", value=vparsed["invoice_number"], key="v_invoice")
+                    vc5,vc6 = st.columns(2)
+                    v_amount = vc5.number_input("Net Amount ($)", value=float(vparsed["amount_due"]), min_value=0.0, step=0.01, key="v_amount")
+                    v_type   = vc6.selectbox("Invoice Type", ["Admin Fee","Professional Services","Combined"], key="v_type")
+                    vb1,_ = st.columns([1,4])
+                    with vb1:
+                        if st.button("Save Vital Entry", type="primary", use_container_width=True):
+                            save_entry({
+                                "week_ending": v_week, "provider_name": v_provider,
+                                "provider_type": "Physician", "specialty": v_specialty,
+                                "service_line": "Physician", "department": "Cardiology - Vital",
+                                "source": "Vital", "days_worked": None, "daily_rate": None,
+                                "hours_worked": None, "bill_rate": None, "is_ot": False,
+                                "invoice_number": v_invoice, "invoice_type": v_type,
+                                "total_spend": v_amount, "notes": f"VitalSolution -- {v_type}"
+                            })
+                            st.success(f"Saved Vital invoice #{v_invoice} -- ${v_amount:,.2f}")
+                            st.rerun()
+
 
 # ══════════════════════════════════════════════════════════════════════════════
 # MANAGE ENTRIES
