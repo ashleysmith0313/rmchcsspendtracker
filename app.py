@@ -948,12 +948,19 @@ def generate_cumulative_report(df, date_from, date_to, title, prepared_by="Ingen
         spec  = str(r["specialty"]) if pd.notna(r["specialty"]) else ""
         qty   = f"{hrs:.1f} hrs" if hrs>0 else (f"{days:.1f} days" if days>0 else "—")
         pv.append([
-            Paragraph(name, cell_style),
-            ptype,
-            Paragraph(spec, cell_style),
-            str(int(r["W"])), qty, f"${r['S']:,.2f}"])
-    pv.append(["TOTAL","","",str(total_weeks),
-               f"{tot_hrs:.1f} hrs" if has_hourly else "—", f"${total_spend:,.2f}"])
+            Paragraph(name,  cell_style),
+            Paragraph(ptype, cell_style),
+            Paragraph(spec,  cell_style),
+            Paragraph(str(int(r["W"])), cell_style),
+            Paragraph(qty,   cell_style),
+            Paragraph(f"${r['S']:,.2f}", cell_style)])
+    tot_style = PS("tn", parent=sty["Normal"], fontSize=8, leading=9.5,
+                   fontName="Helvetica-Bold", textColor=NAVY)
+    pv.append([
+        Paragraph("TOTAL", tot_style), Paragraph("", tot_style),
+        Paragraph("", tot_style), Paragraph(str(total_weeks), tot_style),
+        Paragraph(f"{tot_hrs:.1f} hrs" if has_hourly else "—", tot_style),
+        Paragraph(f"${total_spend:,.2f}", tot_style)])
     story.append(T(pv, [1.85*inch, 0.50*inch, 1.20*inch, 0.44*inch, 0.90*inch, 0.91*inch]))
 
     buf = _io.BytesIO()
