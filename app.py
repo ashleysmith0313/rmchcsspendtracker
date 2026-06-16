@@ -898,6 +898,7 @@ def generate_cumulative_report(df, date_from, date_to, title, prepared_by="Ingen
     for _, r in sl.iterrows():
         sl_rows.append([r["service_line"], str(int(r["C"])),
                         f"${r['S']:,.2f}", f"{(r['S']/total_spend*100):.1f}%"])
+    sl_rows.append(["TOTAL", str(total_clin), f"${total_spend:,.2f}", "100%"])
     sl_tbl = T(sl_rows, [1.55*inch, 0.42*inch, 0.88*inch, 0.60*inch])
 
     two_col = Table([
@@ -938,30 +939,23 @@ def generate_cumulative_report(df, date_from, date_to, title, prepared_by="Ingen
         if len(n) > 28: n = n[:26] + "…"
         return n
 
-    cell_style = PS("cn", parent=sty["Normal"], fontSize=8, leading=9.5)
+    ns = PS("cn", parent=sty["Normal"], fontSize=8, leading=10)
     pv = [["Clinician","Type","Specialty","Wks","Hrs / Days","Total Spend"]]
     for _, r in prov.iterrows():
         hrs  = r["H"] if pd.notna(r["H"]) else 0
         days = r["D"] if pd.notna(r["D"]) else 0
-        name = _clean_clin_name(r["provider_name"])
+        name  = _clean_clin_name(r["provider_name"])
         ptype = str(r.get("provider_type","")) if pd.notna(r.get("provider_type","")) else ""
         spec  = str(r["specialty"]) if pd.notna(r["specialty"]) else ""
         qty   = f"{hrs:.1f} hrs" if hrs>0 else (f"{days:.1f} days" if days>0 else "—")
         pv.append([
-            Paragraph(name,  cell_style),
-            Paragraph(ptype, cell_style),
-            Paragraph(spec,  cell_style),
-            Paragraph(str(int(r["W"])), cell_style),
-            Paragraph(qty,   cell_style),
-            Paragraph(f"${r['S']:,.2f}", cell_style)])
-    tot_style = PS("tn", parent=sty["Normal"], fontSize=8, leading=9.5,
-                   fontName="Helvetica-Bold", textColor=NAVY)
-    pv.append([
-        Paragraph("TOTAL", tot_style), Paragraph("", tot_style),
-        Paragraph("", tot_style), Paragraph(str(total_weeks), tot_style),
-        Paragraph(f"{tot_hrs:.1f} hrs" if has_hourly else "—", tot_style),
-        Paragraph(f"${total_spend:,.2f}", tot_style)])
-    story.append(T(pv, [1.85*inch, 0.50*inch, 1.20*inch, 0.44*inch, 0.90*inch, 0.91*inch]))
+            Paragraph(name, ns), ptype,
+            Paragraph(spec, ns),
+            str(int(r["W"])), qty, f"${r['S']:,.2f}"])
+    pv.append(["TOTAL","","", str(total_weeks),
+               f"{tot_hrs:.1f} hrs" if has_hourly else "—", f"${total_spend:,.2f}"])
+    # Wider columns — Type gets enough room for "Physician", name col wider too
+    story.append(T(pv, [1.90*inch, 0.75*inch, 1.15*inch, 0.42*inch, 0.88*inch, 0.90*inch]))
 
     buf = _io.BytesIO()
     doc = SimpleDocTemplate(buf, pagesize=letter,
