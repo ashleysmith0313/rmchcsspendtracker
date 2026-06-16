@@ -2732,7 +2732,7 @@ elif page == "Program ROI":
                     "labor_cost": c_spend,
                 })
 
-            # Unmatched spend — any spend log entries not matched to a known provider
+            # Separate Vital spend from truly unmatched
             matched_names = [r["Provider"] for r in results] + cost_only_names
             if not spend_filtered.empty and "provider_name" in spend_filtered.columns:
                 def _is_matched(pn):
@@ -2741,16 +2741,20 @@ elif page == "Program ROI":
                         if mn.split()[0].lower() in pn_lower:
                             return True
                     return False
-                unmatched_spend = spend_filtered[
-                    ~spend_filtered["provider_name"].apply(_is_matched)
-                ]["total_spend"].sum()
+                def _is_vital(pn):
+                    return "vital" in str(pn).lower() or "vitalsolution" in str(pn).lower()
+
+                unmatched_rows = spend_filtered[~spend_filtered["provider_name"].apply(_is_matched)]
+                vital_spend    = unmatched_rows[unmatched_rows["provider_name"].apply(_is_vital)]["total_spend"].sum()
+                unmatched_spend = unmatched_rows[~unmatched_rows["provider_name"].apply(_is_vital)]["total_spend"].sum()
             else:
+                vital_spend     = 0.0
                 unmatched_spend = 0.0
 
-            # True total cost = MD/APP matched + cost-only + unmatched
+            # True total cost = MD/APP matched + cost-only + Vital + other unmatched
             md_app_cost      = sum(r["Labor Cost"] for r in results)
             cost_only_total  = sum(r["labor_cost"] for r in cost_only_results)
-            true_total_cost  = md_app_cost + cost_only_total + unmatched_spend
+            true_total_cost  = md_app_cost + cost_only_total + vital_spend + unmatched_spend
 
             if results:
                 st.markdown("---")
@@ -2811,6 +2815,14 @@ elif page == "Program ROI":
                             "Labor Cost": f"${cr['labor_cost']:,.0f}",
                             "Revenue":    "—",
                             "Note":       "Cost line only — no revenue attribution",
+                        })
+                    if vital_spend > 0:
+                        cost_rows.append({
+                            "Provider":   "VitalSolution (Cardiology)",
+                            "Discipline": "Physician",
+                            "Labor Cost": f"${vital_spend:,.0f}",
+                            "Revenue":    "—",
+                            "Note":       "VitalSolution invoiced program cost",
                         })
                     if unmatched_spend > 0:
                         cost_rows.append({
@@ -3032,6 +3044,8 @@ elif page == "Program ROI":
                         cost_rows = [["Provider","Discipline","Labor Cost","Note"]]
                         for cr in cost_only_results:
                             cost_rows.append([cr["provider"], cr["discipline"], fmt(cr["labor_cost"]), "Cost line only"])
+                        if vital_spend > 0:
+                            cost_rows.append(["VitalSolution (Cardiology)","Physician",fmt(vital_spend),"VitalSolution invoiced program cost"])
                         if unmatched_spend > 0:
                             cost_rows.append(["Other / Unmatched","—",fmt(unmatched_spend),"Not matched to placed provider"])
                         t_cost = Table(cost_rows, colWidths=[1.6*inch,1.2*inch,1.0*inch,2.85*inch])
@@ -3317,6 +3331,8 @@ elif page == "Program ROI":
                         cost_rows = [["Provider","Discipline","Labor Cost","Note"]]
                         for cr in cost_only_results:
                             cost_rows.append([cr["provider"], cr["discipline"], fmt(cr["labor_cost"]), "Cost line only — no revenue attribution"])
+                        if vital_spend > 0:
+                            cost_rows.append(["VitalSolution (Cardiology)","Physician",fmt(vital_spend),"VitalSolution invoiced program cost"])
                         if unmatched_spend > 0:
                             cost_rows.append(["Other / Unmatched","—",fmt(unmatched_spend),"Logged spend not matched to placed provider"])
                         t_cost = Table(cost_rows, colWidths=[1.5*inch,1.1*inch,0.9*inch,3.0*inch])
