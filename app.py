@@ -163,27 +163,40 @@ def _fmt_date(val):
 def _map_cand_status(raw):
     if not raw: return "Submitted"
     r = str(raw).lower().strip()
+    # Active — on assignment
+    if r == "active": return "Active"
+    # Placed
+    if r == "placed": return "Placed"
     if any(x in r for x in ["offered - signed","offered - sign","signed"]): return "Placed"
+    # Offered / Accepted
     if "offered" in r and "pending" in r: return "Offered"
     if "offered" in r: return "Offered"
-    if "hired" in r: return "Accepted"
-    if "interviewed" in r: return "Clinical Call Complete"
-    if "pending clinical call" in r or "clinical call" in r: return "Clinical Call Scheduled"
-    if "completed clinical" in r: return "Clinical Call Complete"
-    if "accepted another offer" in r or "declined - rto" in r: return "Declined by Candidate"
+    if "hired" in r or "accepted" in r and "offer" not in r: return "Accepted"
+    # Clinical calls
+    if "pending clinical call" in r or "clinical call scheduled" in r: return "Clinical Call Scheduled"
+    if "interviewed" in r or "completed clinical" in r or "clinical call complete" in r: return "Clinical Call Complete"
+    # Declined by candidate
+    if "accepted another offer" in r or "declined - rto" in r or "declined by candidate" in r: return "Declined by Candidate"
+    # Declined by client / Client declined
+    if "client declined" in r or "client decline" in r: return "Declined by Client"
     if "did not call" in r or "would not recommend" in r or "no total hips" in r or ", pass" in r: return "Declined by Client"
+    # Cancelled by client
+    if "client cancelled" in r or "client cancel" in r: return "Cancelled by Client"
+    # Generic cancelled
     if "cancel" in r: return "Cancelled"
-    if "sent to mgr" in r: return "Submitted"
+    # Submitted
+    if "sent to mgr" in r or "submitted" in r: return "Submitted"
     return "Submitted"
 
 def _map_req_status(raw):
     if not raw: return "Open"
     r = str(raw).lower().strip()
+    if "client cancel" in r: return "Cancelled by Client"
     if "closed" in r: return "Closed"
     if "filled" in r: return "Filled"
     if "max sub" in r: return "Max Submissions"
-    if "hold" in r: return "On Hold"
     if "pending approval" in r: return "On Hold"
+    if "hold" in r: return "On Hold"
     if "open" in r: return "Open"
     return "Open"
 
@@ -281,14 +294,18 @@ def parse_pipeline_excel(file_obj) -> dict:
             disc    = disc_override or _infer_discipline(spec)
             d_sent  = _fmt_date(row[2])
             if disc_override == "Physician":
-                notes_raw = ""
-                rmchcs    = str(row[3]).strip() if len(row) > 3 and row[3] else ""
-                start_date= ""
+                # Physicians sheet: Candidate | Specialty | Date Sent | Status
+                status_raw = str(row[3]).strip() if len(row) > 3 and row[3] else ""
+                notes_raw  = ""
+                rmchcs     = ""
+                start_date = ""
             else:
-                notes_raw = str(row[4]).strip() if len(row) > 4 and row[4] else ""
-                rmchcs    = str(row[5]).strip() if len(row) > 5 and row[5] else ""
-                start_date= _fmt_date(row[3]) if len(row) > 3 and row[3] else ""
-            status = _map_cand_status(notes_raw or rmchcs)
+                # Travel Nurse sheet: Candidate | Specialty | Date Sent | Start Date | Status | RMCHCS Notes
+                start_date = _fmt_date(row[3]) if len(row) > 3 and row[3] else ""
+                status_raw = str(row[4]).strip() if len(row) > 4 and row[4] else ""
+                notes_raw  = ""
+                rmchcs     = str(row[5]).strip() if len(row) > 5 and row[5] else ""
+            status = _map_cand_status(status_raw)
             cred   = cred_lookup.get(name.lower(), {})
             candidates.append({
                 "req_id": None,
