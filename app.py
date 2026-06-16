@@ -2275,6 +2275,7 @@ elif page == "Candidates":
             with sc1:
                 if st.button("Save All Changes", type="primary", use_container_width=True, key="cand_save_all"):
                     col_map = {
+                        "Candidate":"candidate_name",
                         "Status":"status","Source":"source_company","Discipline":"discipline",
                         "Specialty":"specialty","Sent":"date_sent","Offered":"date_offered",
                         "Accepted":"date_accepted","Start":"start_date",
