@@ -2750,9 +2750,13 @@ elif page == "Program ROI":
                 def _is_vital(pn):
                     return "vital" in str(pn).lower() or "vitalsolution" in str(pn).lower()
 
-                unmatched_rows = spend_filtered[~spend_filtered["provider_name"].apply(_is_matched)]
-                vital_spend    = unmatched_rows[unmatched_rows["provider_name"].apply(_is_vital)]["total_spend"].sum()
-                unmatched_spend = unmatched_rows[~unmatched_rows["provider_name"].apply(_is_vital)]["total_spend"].sum()
+                if not spend_filtered.empty and "provider_name" in spend_filtered.columns:
+                    unmatched_rows  = spend_filtered[~spend_filtered["provider_name"].apply(_is_matched)]
+                    vital_spend     = unmatched_rows[unmatched_rows["provider_name"].apply(_is_vital)]["total_spend"].sum() if not unmatched_rows.empty else 0.0
+                    unmatched_spend = unmatched_rows[~unmatched_rows["provider_name"].apply(_is_vital)]["total_spend"].sum() if not unmatched_rows.empty else 0.0
+                else:
+                    vital_spend     = 0.0
+                    unmatched_spend = 0.0
             else:
                 vital_spend     = 0.0
                 unmatched_spend = 0.0
