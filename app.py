@@ -158,7 +158,7 @@ ACTIVE_CAND_STATUSES = {"Submitted","Clinical Call Scheduled","Clinical Call Com
 # Statuses that mean the provider is cleared and on assignment — drive ROI
 WORKING_STATUSES = {"Active"}
 CRED_STATUSES = ["Pending","Clear","Cancelled","Hold"]
-SOURCE_COS    = ["Vista","Springboard","Trustaff","Other IGV Brand","External"]
+SOURCE_COS    = ["Vista","Springboard","Trustaff","Other IGV Brand","External","VitalSolution"]
 DISCIPLINES   = ["Nursing","Allied Health","Physician","APP","Locums"]
 REQ_TYPES     = ["Backfill","Open Req"]
 
@@ -2588,10 +2588,15 @@ elif page == "Program ROI":
                     try:
                         _prov_df = df.copy()
                         _prov_df["_we"] = pd.to_datetime(_prov_df["week_ending"]).dt.date
-                        _prov_match = _prov_df[
-                            _prov_df["provider_name"].str.lower().str.contains(
-                                pname.split()[0].lower(), na=False)
-                        ]
+                        _parts = pname.strip().split()
+                        _last  = _parts[-1].lower() if _parts else ""
+                        _first = _parts[0].lower() if len(_parts) >= 2 else ""
+                        def _cfg_match(x):
+                            xl = str(x).lower()
+                            if _last not in xl: return False
+                            if _first: return _first in xl
+                            return True
+                        _prov_match = _prov_df[_prov_df["provider_name"].apply(_cfg_match)]
                         _prov_spend_wks = _prov_match["week_ending"].nunique()
                     except Exception:
                         _prov_spend_wks = 0
@@ -2750,10 +2755,25 @@ elif page == "Program ROI":
                 unit     = row["unit"]
 
                 # Actual spend + actual weeks worked for this provider
+                # Match on last name (more specific) to avoid cross-provider collisions
+                def _name_match(provider_log_name, candidate_name):
+                    """Match spend log entry to candidate — requires last name match."""
+                    parts = candidate_name.strip().split()
+                    if not parts: return False
+                    log_lower = str(provider_log_name).lower()
+                    # Must match last name at minimum
+                    last = parts[-1].lower()
+                    if last not in log_lower: return False
+                    # If first name also present, require it too (avoids same-last-name collisions)
+                    if len(parts) >= 2:
+                        first = parts[0].lower()
+                        return first in log_lower
+                    return True
+
                 if not spend_filtered.empty and "provider_name" in spend_filtered.columns:
                     prov_rows_df = spend_filtered[
-                        spend_filtered["provider_name"].str.lower().str.contains(
-                            pname.split()[0].lower(), na=False)
+                        spend_filtered["provider_name"].apply(
+                            lambda x: _name_match(x, pname))
                     ]
                     provider_spend   = prov_rows_df["total_spend"].sum()
                     actual_weeks     = prov_rows_df["week_ending"].nunique() if not prov_rows_df.empty else 0
@@ -2828,9 +2848,16 @@ elif page == "Program ROI":
 
             for cname in cost_only_names:
                 if not spend_filtered.empty and "provider_name" in spend_filtered.columns:
+                    _cparts = cname.strip().split()
+                    _clast  = _cparts[-1].lower() if _cparts else ""
+                    _cfirst = _cparts[0].lower() if len(_cparts) >= 2 else ""
+                    def _cost_match(x):
+                        xl = str(x).lower()
+                        if _clast not in xl: return False
+                        if _cfirst: return _cfirst in xl
+                        return True
                     c_spend = spend_filtered[
-                        spend_filtered["provider_name"].str.lower().str.contains(
-                            cname.split()[0].lower(), na=False)
+                        spend_filtered["provider_name"].apply(_cost_match)
                     ]["total_spend"].sum()
                 else:
                     c_spend = 0.0
