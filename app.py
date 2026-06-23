@@ -2553,12 +2553,13 @@ elif page == "Program ROI":
         if not revenue_provider_names:
             st.info("No placed MD/APP providers yet. Once candidates with Physician, APP, or Locums discipline are placed, they appear here.")
         else:
-            cols_hdr = st.columns([3,2,2,2,1])
+            cols_hdr = st.columns([2.5,2,1.8,1.8,1.5,1])
             cols_hdr[0].markdown("**Provider**")
             cols_hdr[1].markdown("**Specialty**")
             cols_hdr[2].markdown("**Rate/Unit ($)**")
             cols_hdr[3].markdown("**Units/Week**")
-            cols_hdr[4].markdown("**Unit**")
+            cols_hdr[4].markdown("**Wks Override** *(0 = auto)*")
+            cols_hdr[5].markdown("**Unit**")
 
             st.markdown("<hr style='margin:4px 0 8px 0; border-color:#e2e8f0'>", unsafe_allow_html=True)
 
@@ -2581,7 +2582,24 @@ elif page == "Program ROI":
                 else:
                     resolved_spec = "Other / Custom"
 
-                c1, c2, c3, c4, c5 = st.columns([3,2,2,2,1])
+                # Pre-calculate actual weeks from spend log for display hint
+                _prov_spend_wks = 0
+                if not df.empty and "provider_name" in df.columns:
+                    try:
+                        _prov_df = df.copy()
+                        _prov_df["_we"] = pd.to_datetime(_prov_df["week_ending"]).dt.date
+                        _prov_match = _prov_df[
+                            _prov_df["provider_name"].str.lower().str.contains(
+                                pname.split()[0].lower(), na=False)
+                        ]
+                        _prov_spend_wks = _prov_match["week_ending"].nunique()
+                    except Exception:
+                        _prov_spend_wks = 0
+                _weeks_hint = f"Auto: {_prov_spend_wks} wks from spend log" if _prov_spend_wks > 0 else "No spend log entries — enter manually"
+                _saved_wks  = cfg.get("weeks_override", None)
+                _init_wks   = float(_saved_wks) if _saved_wks is not None else float(_prov_spend_wks if _prov_spend_wks > 0 else 0.0)
+
+                c1, c2, c3, c4, c5, c6 = st.columns([2.5,2,1.8,1.8,1.5,1])
                 c1.markdown(f"**{pname}**")
 
                 spec_idx = specialty_options.index(resolved_spec) if resolved_spec in specialty_options else 0
@@ -2590,12 +2608,9 @@ elif page == "Program ROI":
                                         key=f"roi_spec_{pname}",
                                         label_visibility="collapsed")
 
-                # Rate: ALWAYS drive from current dropdown selection first,
-                # then fall back to saved override only if specialty matches saved
                 benchmark_rate, unit_val = SPECIALTY_REVENUE.get(sel_spec, (0.0, "encounters"))
                 saved_rate = cfg.get("rate", None)
                 saved_spec_for_rate = cfg.get("specialty", "")
-                # Use saved rate only if it was saved against THIS same specialty
                 if saved_rate is not None and saved_spec_for_rate == sel_spec:
                     init_rate = float(saved_rate)
                 else:
@@ -2610,7 +2625,13 @@ elif page == "Program ROI":
                                               min_value=0.0, step=1.0,
                                               key=f"roi_vol_{pname}",
                                               label_visibility="collapsed")
-                c5.markdown(
+                wks_override = c5.number_input("Wks Override",
+                                               value=_init_wks,
+                                               min_value=0.0, step=0.5,
+                                               key=f"roi_wks_{pname}",
+                                               label_visibility="collapsed",
+                                               help=f"{_weeks_hint}. Set to 0 to use auto-detection or full period.")
+                c6.markdown(
                     f"<div style='padding-top:8px;font-size:0.78rem;color:#64748b'>{unit_val}</div>",
                     unsafe_allow_html=True)
 
@@ -2620,7 +2641,15 @@ elif page == "Program ROI":
                     "rate":            override_rate,
                     "volume_per_week": vol_per_wk,
                     "unit":            unit_val,
+                    "weeks_override":  wks_override,
                 })
+
+            # Update header to include Wks Override column
+            cols_hdr[0].markdown("**Provider**")
+            cols_hdr[1].markdown("**Specialty**")
+            cols_hdr[2].markdown("**Rate/Unit ($)**")
+            cols_hdr[3].markdown("**Units/Week**")
+            cols_hdr[4].markdown("**Wks Override**")
 
             sv1, sv2, _ = st.columns([1,1,4])
             if sv1.button("Save Configuration", type="primary", use_container_width=True):
@@ -2629,6 +2658,7 @@ elif page == "Program ROI":
                         "specialty":       row["specialty"],
                         "rate":            row["rate"],
                         "volume_per_week": row["volume_per_week"],
+                        "weeks_override":  row["weeks_override"],
                     }
                 _save_roi(roi_config)
                 st.success("Configuration saved.")
@@ -2685,7 +2715,7 @@ elif page == "Program ROI":
             st.caption(f"Collection rate applied: **{coll_label}** — Gross revenue × {collection_rate:.0%} = Net collected revenue. "
                        f"Rural hospitals (RMCHCS) typically collect 30–40% of gross charges; urban/suburban 50–60%.")
 
-            # ── Step 3: Compute ROI ───────────────────────────────────────────
+            # ── Step 3: Compute mode + ROI ────────────────────────────────────
             if not df.empty:
                 spend_filtered = df.copy()
                 try:
@@ -2699,9 +2729,25 @@ elif page == "Program ROI":
             else:
                 spend_filtered = pd.DataFrame()
 
-            # Number of weeks in period
+            # Period weeks (full period)
             period_days  = max(1, (end_date - start_date).days)
             period_weeks = period_days / 7.0
+
+            # Calculation mode
+            st.markdown("---")
+            calc_mode = st.radio(
+                "Revenue Calculation Mode",
+                ["Actual Weeks Worked (per clinician)", "Full Period (projection)"],
+                index=0,
+                horizontal=True,
+                key="roi_calc_mode",
+                help="Actual Weeks Worked uses only the weeks each clinician has logged spend — more accurate for providers who started mid-period. Full Period projects revenue across the entire date range."
+            )
+            use_actual_weeks = calc_mode == "Actual Weeks Worked (per clinician)"
+            if use_actual_weeks:
+                st.caption("Revenue calculated using each clinician's actual logged weeks in the spend tracker. Switch to Full Period to project across the entire date range.")
+            else:
+                st.caption(f"Revenue projected across the full {period_weeks:.1f}-week period for all clinicians.")
 
             results = []
             for row in provider_rows:
@@ -2710,17 +2756,47 @@ elif page == "Program ROI":
                 vol_wk   = row["volume_per_week"]
                 unit     = row["unit"]
 
-                # Actual spend for this provider
+                # Actual spend + actual weeks worked for this provider
                 if not spend_filtered.empty and "provider_name" in spend_filtered.columns:
-                    provider_spend = spend_filtered[
+                    prov_rows_df = spend_filtered[
                         spend_filtered["provider_name"].str.lower().str.contains(
                             pname.split()[0].lower(), na=False)
-                    ]["total_spend"].sum()
+                    ]
+                    provider_spend   = prov_rows_df["total_spend"].sum()
+                    actual_weeks     = prov_rows_df["week_ending"].nunique() if not prov_rows_df.empty else 0
                 else:
                     provider_spend = 0.0
+                    actual_weeks   = 0
+
+                # Check for manual weeks override in config
+                manual_wks = float(row.get("weeks_override", 0) or 0)
+
+                # Also check candidate start date for weeks on assignment
+                if not placed.empty and "candidate_name" in placed.columns:
+                    cand_match = placed[placed["candidate_name"].str.lower().str.contains(
+                        pname.split()[0].lower(), na=False)]
+                    if not cand_match.empty:
+                        start_str = cand_match.iloc[0].get("start_date","")
+                        if start_str:
+                            try:
+                                cand_start = date.fromisoformat(str(start_str))
+                                effective_end = min(end_date, date.today())
+                                weeks_from_start = max(0, (effective_end - cand_start).days / 7.0)
+                                if actual_weeks == 0:
+                                    actual_weeks = round(weeks_from_start, 1)
+                            except Exception:
+                                pass
+
+                # Priority: manual override > actual spend weeks > full period
+                if manual_wks > 0:
+                    calc_weeks = manual_wks
+                elif use_actual_weeks and actual_weeks > 0:
+                    calc_weeks = actual_weeks
+                else:
+                    calc_weeks = period_weeks
 
                 # Estimated revenue — gross and net
-                gross_revenue = vol_wk * rate * period_weeks
+                gross_revenue = vol_wk * rate * calc_weeks
                 net_revenue   = gross_revenue * collection_rate
                 net_contrib   = net_revenue - provider_spend
                 roi_pct       = ((net_contrib / provider_spend) * 100) if provider_spend > 0 else 0.0
@@ -2731,6 +2807,7 @@ elif page == "Program ROI":
                     "Provider":          pname,
                     "Specialty":         row["specialty"],
                     "Labor Cost":        provider_spend,
+                    "Weeks Used":        calc_weeks,
                     "Gross Revenue":     gross_revenue,
                     "Net Revenue":       net_revenue,
                     "Net Contribution":  net_contrib,
@@ -2835,8 +2912,9 @@ elif page == "Program ROI":
                 st.markdown("**Revenue Providers (MD / APP)**")
                 df_results = pd.DataFrame(results)
                 st.caption(f"Collection rate: **{coll_label}** — Gross revenue × {collection_rate:.0%} = Net collected.")
-                disp_cols  = ["Provider","Specialty","Labor Cost","Gross Revenue","Net Revenue","Net Contribution","ROI %","Units/Wk","Rate/Unit","Unit"]
+                disp_cols  = ["Provider","Specialty","Weeks Used","Labor Cost","Gross Revenue","Net Revenue","Net Contribution","ROI %","Units/Wk","Rate/Unit","Unit"]
                 df_disp    = df_results[disp_cols].copy()
+                df_disp["Weeks Used"]       = df_disp["Weeks Used"].apply(lambda x: f"{x:.1f} wks")
                 df_disp["Labor Cost"]       = df_disp["Labor Cost"].apply(lambda x: f"${x:,.0f}")
                 df_disp["Gross Revenue"]    = df_disp["Gross Revenue"].apply(lambda x: f"${x:,.0f}")
                 df_disp["Net Revenue"]      = df_disp["Net Revenue"].apply(lambda x: f"${x:,.0f}")
