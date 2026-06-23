@@ -2649,9 +2649,9 @@ elif page == "Program ROI":
 
             st.markdown("---")
 
-            # ── Step 2: Date range for calculation ────────────────────────────
-            st.markdown("#### Analysis Period")
-            dc1, dc2 = st.columns(2)
+            # ── Step 2: Date range + hospital type ───────────────────────────
+            st.markdown("#### Analysis Period & Collection Rate")
+            dc1, dc2, dc3, dc4 = st.columns([2,2,2,2])
             try:
                 min_date = date.fromisoformat(str(df["week_ending"].min())) if not df.empty else date.today() - timedelta(days=90)
                 max_date = date.fromisoformat(str(df["week_ending"].max())) if not df.empty else date.today()
@@ -2661,6 +2661,29 @@ elif page == "Program ROI":
 
             start_date = dc1.date_input("From", value=min_date, key="roi_start")
             end_date   = dc2.date_input("To",   value=max_date, key="roi_end")
+
+            HOSPITAL_TYPES = {
+                "Rural (RMCHCS)":         (0.30, 0.40),
+                "Urban / Suburban":       (0.50, 0.60),
+                "Critical Access Hospital":(0.25, 0.35),
+                "Custom":                 (None, None),
+            }
+            hosp_type = dc3.selectbox("Hospital Type", list(HOSPITAL_TYPES.keys()),
+                                       index=0, key="roi_hosp_type")
+            lo, hi = HOSPITAL_TYPES[hosp_type]
+            if lo is None:
+                collection_rate = dc4.number_input("Collection Rate (%)",
+                    min_value=1.0, max_value=100.0, value=35.0, step=1.0,
+                    key="roi_coll_custom") / 100.0
+                coll_label = f"{collection_rate*100:.0f}% (custom)"
+            else:
+                collection_rate = dc4.slider("Collection Rate (%)",
+                    min_value=int(lo*100), max_value=int(hi*100),
+                    value=int((lo+hi)/2*100), step=1,
+                    key="roi_coll_rate") / 100.0
+                coll_label = f"{collection_rate*100:.0f}% ({hosp_type})"
+            st.caption(f"Collection rate applied: **{coll_label}** — Gross revenue × {collection_rate:.0%} = Net collected revenue. "
+                       f"Rural hospitals (RMCHCS) typically collect 30–40% of gross charges; urban/suburban 50–60%.")
 
             # ── Step 3: Compute ROI ───────────────────────────────────────────
             if not df.empty:
@@ -2696,18 +2719,23 @@ elif page == "Program ROI":
                 else:
                     provider_spend = 0.0
 
-                # Estimated revenue
-                est_revenue  = vol_wk * rate * period_weeks
-                net_contrib  = est_revenue - provider_spend
-                roi_pct      = ((net_contrib / provider_spend) * 100) if provider_spend > 0 else 0.0
+                # Estimated revenue — gross and net
+                gross_revenue = vol_wk * rate * period_weeks
+                net_revenue   = gross_revenue * collection_rate
+                net_contrib   = net_revenue - provider_spend
+                roi_pct       = ((net_contrib / provider_spend) * 100) if provider_spend > 0 else 0.0
+                gross_contrib = gross_revenue - provider_spend
+                gross_roi     = ((gross_contrib / provider_spend) * 100) if provider_spend > 0 else 0.0
 
                 results.append({
                     "Provider":          pname,
                     "Specialty":         row["specialty"],
                     "Labor Cost":        provider_spend,
-                    "Est. Revenue":      est_revenue,
+                    "Gross Revenue":     gross_revenue,
+                    "Net Revenue":       net_revenue,
                     "Net Contribution":  net_contrib,
                     "ROI %":             roi_pct,
+                    "Gross ROI %":       gross_roi,
                     "Units/Wk":          vol_wk,
                     "Rate/Unit":         rate,
                     "Unit":              unit,
@@ -2770,7 +2798,7 @@ elif page == "Program ROI":
                 st.markdown("---")
                 st.markdown("#### Program ROI Dashboard")
 
-                total_rev  = sum(r["Est. Revenue"]     for r in results)
+                total_rev  = sum(r["Net Revenue"]      for r in results)
                 total_net  = total_rev - true_total_cost
                 prog_roi   = ((total_net / true_total_cost) * 100) if true_total_cost > 0 else 0.0
 
@@ -2795,20 +2823,23 @@ elif page == "Program ROI":
                         f'{delta_html}'
                         f'</div>', unsafe_allow_html=True)
 
+                total_gross = sum(r["Gross Revenue"] for r in results)
                 _kpi(k1, "True Total Cost",    true_total_cost)
-                _kpi(k2, "Estimated Revenue",  total_rev)
-                _kpi(k3, "Net Contribution",   total_net,  delta=prog_roi)
-                _kpi(k4, "Program ROI",        prog_roi, fmt="%")
+                _kpi(k2, "Gross Revenue",      total_gross)
+                _kpi(k3, "Net Revenue Collected", total_rev)
+                _kpi(k4, "Program ROI (Net)",  prog_roi, fmt="%")
 
                 st.markdown("<div style='height:1rem'></div>", unsafe_allow_html=True)
 
                 # ── Provider breakdown table ──────────────────────────────────
                 st.markdown("**Revenue Providers (MD / APP)**")
                 df_results = pd.DataFrame(results)
-                disp_cols  = ["Provider","Specialty","Labor Cost","Est. Revenue","Net Contribution","ROI %","Units/Wk","Rate/Unit","Unit"]
+                st.caption(f"Collection rate: **{coll_label}** — Gross revenue × {collection_rate:.0%} = Net collected.")
+                disp_cols  = ["Provider","Specialty","Labor Cost","Gross Revenue","Net Revenue","Net Contribution","ROI %","Units/Wk","Rate/Unit","Unit"]
                 df_disp    = df_results[disp_cols].copy()
                 df_disp["Labor Cost"]       = df_disp["Labor Cost"].apply(lambda x: f"${x:,.0f}")
-                df_disp["Est. Revenue"]     = df_disp["Est. Revenue"].apply(lambda x: f"${x:,.0f}")
+                df_disp["Gross Revenue"]    = df_disp["Gross Revenue"].apply(lambda x: f"${x:,.0f}")
+                df_disp["Net Revenue"]      = df_disp["Net Revenue"].apply(lambda x: f"${x:,.0f}")
                 df_disp["Net Contribution"] = df_disp["Net Contribution"].apply(lambda x: f"${x:,.0f}")
                 df_disp["ROI %"]            = df_disp["ROI %"].apply(lambda x: f"{x:.1f}%")
                 df_disp["Rate/Unit"]        = df_disp["Rate/Unit"].apply(lambda x: f"${x:,.0f}")
@@ -2871,10 +2902,10 @@ elif page == "Program ROI":
                     st.markdown("**Program Total: Cost vs Revenue**")
                     fig_prog = go.Figure()
                     fig_prog.add_trace(go.Bar(
-                        x=["True Total Cost", "Estimated Revenue"],
-                        y=[true_total_cost, total_rev],
-                        marker_color=["#ef4444", "#10b981"],
-                        text=[f"${true_total_cost:,.0f}", f"${total_rev:,.0f}"],
+                        x=["Total Cost", "Gross Revenue", "Net Collected"],
+                        y=[true_total_cost, total_gross, total_rev],
+                        marker_color=["#ef4444", "#94a3b8", "#10b981"],
+                        text=[f"${true_total_cost:,.0f}", f"${total_gross:,.0f}", f"${total_rev:,.0f}"],
                         textposition="outside",
                         showlegend=False,
                     ))
