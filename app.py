@@ -2621,7 +2621,7 @@ elif page == "Program ROI":
                                                 key=f"roi_rate_{pname}_{sel_spec}",
                                                 label_visibility="collapsed")
                 vol_per_wk = c4.number_input("Vol/Wk",
-                                              value=float(cfg.get("volume_per_week", 20.0)),
+                                              value=float(cfg.get("volume_per_week", 0.0)),
                                               min_value=0.0, step=1.0,
                                               key=f"roi_vol_{pname}",
                                               label_visibility="collapsed")
@@ -2643,13 +2643,6 @@ elif page == "Program ROI":
                     "unit":            unit_val,
                     "weeks_override":  wks_override,
                 })
-
-            # Update header to include Wks Override column
-            cols_hdr[0].markdown("**Provider**")
-            cols_hdr[1].markdown("**Specialty**")
-            cols_hdr[2].markdown("**Rate/Unit ($)**")
-            cols_hdr[3].markdown("**Units/Week**")
-            cols_hdr[4].markdown("**Wks Override**")
 
             sv1, sv2, _ = st.columns([1,1,4])
             if sv1.button("Save Configuration", type="primary", use_container_width=True):
@@ -2795,9 +2788,12 @@ elif page == "Program ROI":
                 else:
                     calc_weeks = period_weeks
 
-                # Estimated revenue — gross and net
-                gross_revenue = vol_wk * rate * calc_weeks
-                net_revenue   = gross_revenue * collection_rate
+                # Estimated revenue — weeks gates everything; zero weeks = zero revenue
+                if calc_weeks <= 0:
+                    gross_revenue = 0.0
+                else:
+                    gross_revenue = vol_wk * rate * calc_weeks
+                net_revenue = gross_revenue * collection_rate
                 net_contrib   = net_revenue - provider_spend
                 roi_pct       = ((net_contrib / provider_spend) * 100) if provider_spend > 0 else 0.0
                 gross_contrib = gross_revenue - provider_spend
