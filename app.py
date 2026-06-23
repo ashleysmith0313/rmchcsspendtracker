@@ -2764,29 +2764,34 @@ elif page == "Program ROI":
                 # Check for manual weeks override in config
                 manual_wks = float(row.get("weeks_override", 0) or 0)
 
-                # Also check candidate start date for weeks on assignment
-                if not placed.empty and "candidate_name" in placed.columns:
-                    cand_match = placed[placed["candidate_name"].str.lower().str.contains(
-                        pname.split()[0].lower(), na=False)]
-                    if not cand_match.empty:
-                        start_str = cand_match.iloc[0].get("start_date","")
-                        if start_str:
-                            try:
-                                cand_start = date.fromisoformat(str(start_str))
-                                effective_end = min(end_date, date.today())
-                                weeks_from_start = max(0, (effective_end - cand_start).days / 7.0)
-                                if actual_weeks == 0:
-                                    actual_weeks = round(weeks_from_start, 1)
-                            except Exception:
-                                pass
+                # Only resolve weeks if cases/volume are actually configured
+                if vol_wk > 0:
+                    # Check candidate start date as fallback
+                    if not placed.empty and "candidate_name" in placed.columns:
+                        cand_match = placed[placed["candidate_name"].str.lower().str.contains(
+                            pname.split()[0].lower(), na=False)]
+                        if not cand_match.empty:
+                            start_str = cand_match.iloc[0].get("start_date","")
+                            if start_str:
+                                try:
+                                    cand_start = date.fromisoformat(str(start_str))
+                                    effective_end = min(end_date, date.today())
+                                    weeks_from_start = max(0, (effective_end - cand_start).days / 7.0)
+                                    if actual_weeks == 0:
+                                        actual_weeks = round(weeks_from_start, 1)
+                                except Exception:
+                                    pass
 
-                # Priority: manual override > actual spend weeks > full period
-                if manual_wks > 0:
-                    calc_weeks = manual_wks
-                elif use_actual_weeks and actual_weeks > 0:
-                    calc_weeks = actual_weeks
+                    # Priority: manual override > actual spend weeks > full period
+                    if manual_wks > 0:
+                        calc_weeks = manual_wks
+                    elif use_actual_weeks and actual_weeks > 0:
+                        calc_weeks = actual_weeks
+                    else:
+                        calc_weeks = period_weeks
                 else:
-                    calc_weeks = period_weeks
+                    # No cases configured — zero everything out
+                    calc_weeks = 0
 
                 # Estimated revenue — weeks gates everything; zero weeks = zero revenue
                 if calc_weeks <= 0:
