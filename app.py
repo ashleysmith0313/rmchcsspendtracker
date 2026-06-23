@@ -2925,13 +2925,13 @@ elif page == "Program ROI":
                         fig_prov = go.Figure()
                         providers_list = [r["Provider"] for r in results]
                         md_costs = [r["Labor Cost"]   for r in results]
-                        revs     = [r["Est. Revenue"] for r in results]
+                        revs     = [r["Net Revenue"] for r in results]
                         fig_prov.add_trace(go.Bar(
                             name="Labor Cost", x=providers_list, y=md_costs,
                             marker_color="#ef4444", opacity=0.85
                         ))
                         fig_prov.add_trace(go.Bar(
-                            name="Est. Revenue", x=providers_list, y=revs,
+                            name="Net Revenue", x=providers_list, y=revs,
                             marker_color="#10b981", opacity=0.85
                         ))
                         fig_prov.update_layout(
@@ -3075,13 +3075,13 @@ elif page == "Program ROI":
                     # Revenue provider table
                     story.append(sec("Revenue Providers (MD / APP)"))
                     story.append(hr())
-                    rev_rows = [["Provider","Specialty","Labor Cost","Est. Revenue","Net Contribution","ROI %"]]
+                    rev_rows = [["Provider","Specialty","Labor Cost","Gross Revenue","Net Revenue","Net Contribution","ROI %"]]
                     for r in results:
                         roi_str = f"{r['ROI %']:.1f}%" if isinstance(r['ROI %'], (int,float)) else str(r['ROI %'])
                         rev_rows.append([r["Provider"], r["Specialty"],
-                                          fmt(r["Labor Cost"]), fmt(r["Est. Revenue"]),
-                                          fmt(r["Net Contribution"]), roi_str])
-                    t_rev = Table(rev_rows, colWidths=[1.4*inch,1.5*inch,0.95*inch,0.95*inch,1.1*inch,0.7*inch])
+                                          fmt(r["Labor Cost"]), fmt(r["Gross Revenue"]),
+                                          fmt(r["Net Revenue"]), fmt(r["Net Contribution"]), roi_str])
+                    t_rev = Table(rev_rows, colWidths=[1.2*inch,1.2*inch,0.8*inch,0.8*inch,0.8*inch,0.9*inch,0.65*inch])
                     t_rev.setStyle(TableStyle([
                         ("BACKGROUND",(0,0),(-1,0),NAVY),("TEXTCOLOR",(0,0),(-1,0),WHITE),
                         ("FONTNAME",(0,0),(-1,0),"Helvetica-Bold"),("FONTSIZE",(0,0),(-1,0),8),
@@ -3271,12 +3271,12 @@ elif page == "Program ROI":
                             return None
                         pnames  = [r["Provider"] for r in results]
                         costs_v = [r["Labor Cost"] for r in results]
-                        revs_v  = [r["Est. Revenue"] for r in results]
+                        revs_v  = [r["Net Revenue"] for r in results]
                         x = np.arange(len(pnames))
                         w = 0.35
                         fig, ax = plt.subplots(figsize=(width_in, height_in))
                         b1 = ax.bar(x - w/2, costs_v, w, label="Labor Cost", color="#ef4444", edgecolor="white")
-                        b2 = ax.bar(x + w/2, revs_v,  w, label="Est. Revenue", color="#10b981", edgecolor="white")
+                        b2 = ax.bar(x + w/2, revs_v,  w, label="Net Revenue",  color="#10b981", edgecolor="white")
                         ax.set_xticks(x)
                         ax.set_xticklabels(pnames, fontsize=8)
                         ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda x,_: abbrev(x)))
@@ -3361,14 +3361,14 @@ elif page == "Program ROI":
                     # Revenue provider detail table
                     story.append(h2("Revenue Provider Detail"))
                     story.append(Spacer(1,6))
-                    rev_rows = [["Provider","Specialty","Labor Cost","Est. Revenue","Net Contribution","ROI %","Units/Wk","Rate/Unit"]]
+                    rev_rows = [["Provider","Specialty","Labor Cost","Gross Revenue","Net Revenue","Net Contribution","ROI %","Units/Wk","Rate/Unit"]]
                     for r in results:
                         roi_str = f"{r['ROI %']:.1f}%" if isinstance(r["ROI %"], (int,float)) else str(r["ROI %"])
                         rev_rows.append([r["Provider"], r["Specialty"],
-                                          fmt(r["Labor Cost"]), fmt(r["Est. Revenue"]),
-                                          fmt(r["Net Contribution"]), roi_str,
-                                          str(int(r["Units/Wk"])), fmt(r["Rate/Unit"])])
-                    t_rev = Table(rev_rows, colWidths=[1.1*inch,1.15*inch,0.8*inch,0.8*inch,0.9*inch,0.55*inch,0.6*inch,0.6*inch])
+                                          fmt(r["Labor Cost"]), fmt(r["Gross Revenue"]),
+                                          fmt(r["Net Revenue"]), fmt(r["Net Contribution"]),
+                                          roi_str, str(int(r["Units/Wk"])), fmt(r["Rate/Unit"])])
+                    t_rev = Table(rev_rows, colWidths=[1.0*inch,1.0*inch,0.7*inch,0.7*inch,0.7*inch,0.75*inch,0.5*inch,0.5*inch,0.5*inch])
                     t_rev.setStyle(TableStyle([
                         ("BACKGROUND",(0,0),(-1,0),NAVY),("TEXTCOLOR",(0,0),(-1,0),WHITE),
                         ("FONTNAME",(0,0),(-1,0),"Helvetica-Bold"),("FONTSIZE",(0,0),(-1,0),7.5),
